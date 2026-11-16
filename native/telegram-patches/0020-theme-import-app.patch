@@ -1,6 +1,12 @@
 --- a/Telegram-Mac/app/AppDelegate.swift
 +++ b/Telegram-Mac/app/AppDelegate.swift
-@@ -23,6 +23,10 @@
+@@ -1,4 +1,5 @@
+ import Cocoa
++import AVFoundation
+ import FFMpegBinding
+ import SwiftSignalKit
+ import Postbox
+@@ -23,6 +24,10 @@
  import FoundationUtils
  import InAppSettings
  import ThemeSettings
@@ -11,7 +17,7 @@
  import ColorPalette
  import WebKit
  import CodeSyntax
-@@ -308,6 +312,201 @@
+@@ -308,6 +313,263 @@
      
      var baseAppBundleId: String {
          return  Bundle.main.bundleIdentifier!
@@ -105,10 +111,51 @@
 +        return .image([representation], settings: settings)
 +    }
 +
++    // The resource identity binds the optional clip to the exact persisted poster.
++    nonisolated private static func slopogramStoreThemeVideo(_ bytes: Data, wallpaper: Wallpaper) throws {
++        guard case let .image(representations, _) = wallpaper, let resource = representations.first?.resource as? LocalFileMediaResource,
++              let destination = slopogramWallpaperVideoURL(resource) else { throw SlopogramThemeImportError.storage }
++        try slopogramStoreVideoBytes(bytes, destination: destination)
++    }
++
++    nonisolated private static func slopogramStoreVideoBytes(_ bytes: Data, destination: URL) throws {
++        let directory = destination.deletingLastPathComponent()
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        let temporary = directory.appendingPathComponent(UUID().uuidString + ".mp4")
++        defer { try? FileManager.default.removeItem(at: temporary) }
++        try bytes.write(to: temporary, options: .atomic)
++        let asset = AVURLAsset(url: temporary, options: [AVURLAssetReferenceRestrictionsKey: NSNumber(value: AVAssetReferenceRestrictions.forbidAll.rawValue)])
++        let tracks = asset.tracks(withMediaType: .video)
++        guard tracks.count == 1, asset.tracks(withMediaType: .audio).isEmpty,
++              let track = tracks.first, track.naturalSize.width > 0, track.naturalSize.height > 0,
++              track.naturalSize.width <= 1920, track.naturalSize.height <= 1920,
++              track.nominalFrameRate > 0, track.nominalFrameRate <= 60,
++              asset.duration.seconds.isFinite, asset.duration.seconds > 0, asset.duration.seconds <= 30,
++              !track.formatDescriptions.isEmpty,
++              track.formatDescriptions.allSatisfy({ CMFormatDescriptionGetMediaSubType($0 as! CMFormatDescription) == kCMVideoCodecType_H264 }) else {
++            throw SlopogramThemeImportError.invalidWallpaper
++        }
++        // Read one decoded frame before publishing a clip with plausible header metadata.
++        let reader = try AVAssetReader(asset: asset)
++        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
++            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
++        ])
++        output.alwaysCopiesSampleData = false
++        guard reader.canAdd(output) else { throw SlopogramThemeImportError.invalidWallpaper }
++        reader.add(output)
++        defer { reader.cancelReading() }
++        guard reader.startReading(), let frame = output.copyNextSampleBuffer(),
++              CMSampleBufferGetImageBuffer(frame) != nil else { throw SlopogramThemeImportError.invalidWallpaper }
++        try FileManager.default.moveItem(at: temporary, to: destination)
++    }
++
 +    nonisolated private static func slopogramDiscardPreparedWallpaper(_ wallpaper: Wallpaper?, postbox: Postbox) {
 +        guard case let .image(representations, settings)? = wallpaper, let resource = representations.first?.resource else { return }
 +        try? FileManager.default.removeItem(atPath: postbox.mediaBox.resourcePath(resource))
 +        if let directory = ApiEnvironment.containerURL?.appendingPathComponent("Wallpapers") {
++            if let resource = resource as? LocalFileMediaResource, let videoURL = slopogramWallpaperVideoURL(resource) {
++                try? FileManager.default.removeItem(at: videoURL)
++            }
 +            let base = resource.id.stringRepresentation + settings.stringValue
 +            for suffix in ["_isDark__0.png", "_isDark__1.png"] {
 +                try? FileManager.default.removeItem(at: directory.appendingPathComponent(base + suffix))
@@ -141,10 +188,10 @@
 +            Task { @MainActor in
 +                defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
 +                do {
-+                    let prepared: (ColorPalette, Data?, Bool) = try await Task.detached(priority: .userInitiated) {
++                    let prepared: (palette: ColorPalette, poster: Data?, tiled: Bool, clip: Data?, warning: String?) = try await Task.detached(priority: .userInitiated) {
 +                        if url.pathExtension.lowercased() == "palette" {
 +                            guard let palette = importPalette(url.path) else { throw SlopogramThemeImportError.invalidPalette }
-+                            return (palette, try Self.slopogramPaletteWallpaper(url), false)
++                            return (palette, try Self.slopogramPaletteWallpaper(url), false, nil, nil)
 +                        }
 +                        let decoded = try await decodeDesktopTheme(path: url.path)
 +                        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -153,17 +200,30 @@
 +                        let paletteURL = directory.appendingPathComponent("theme.palette")
 +                        try decoded.palette.write(to: paletteURL, atomically: true, encoding: .utf8)
 +                        guard let palette = importPalette(paletteURL.path) else { throw SlopogramThemeImportError.invalidPalette }
-+                        return (palette, decoded.wallpaper.map { Data($0) }, decoded.wallpaperTiled)
++                        return (palette, decoded.wallpaper.map { Data($0) }, decoded.wallpaperTiled, decoded.video.map { Data($0) }, decoded.videoWarning)
 +                    }.value
 +                    guard !SlopogramStreamerMode.isActive, self.currentContext === context else { finish(); return }
-+                    let (palette, wallpaperBytes, tiled) = prepared
++                    let (palette, wallpaperBytes, tiled, videoBytes, videoWarning) = prepared
 +                    let manager = context.sharedContext.accountManager
 +                    let apply = {
 +                        guard !SlopogramStreamerMode.isActive, self.currentContext === context else { finish(); return }
 +                        Task { @MainActor in
 +                            do {
-+                                let wallpaper = try await Task.detached(priority: .userInitiated) {
-+                                    try wallpaperBytes.map { try Self.slopogramPrepareWallpaper($0, tiled: tiled, postbox: context.account.postbox) }
++                                let (wallpaper, warning) = try await Task.detached(priority: .userInitiated) {
++                                    let wallpaper = try wallpaperBytes.map { try Self.slopogramPrepareWallpaper($0, tiled: tiled, postbox: context.account.postbox) }
++                                    var warning = videoWarning
++                                    if let videoBytes {
++                                        if let wallpaper, !tiled {
++                                            do {
++                                                try Self.slopogramStoreThemeVideo(videoBytes, wallpaper: wallpaper)
++                                            } catch {
++                                                warning = "The video could not be read or saved as a silent H.264 loop."
++                                            }
++                                        } else {
++                                            warning = "An animated theme needs a background.jpg or background.png poster."
++                                        }
++                                    }
++                                    return (wallpaper, warning)
 +                                }.value
 +                                guard !SlopogramStreamerMode.isActive, self.currentContext === context else {
 +                                    if let wallpaper { Task.detached { Self.slopogramDiscardPreparedWallpaper(wallpaper, postbox: context.account.postbox) } }
@@ -178,7 +238,15 @@
 +                                let settings = entry?.get(ThemePaletteSettings.self) ?? ThemePaletteSettings.defaultTheme
 +                                return PreferencesEntry(Self.slopogramImportedThemeSettings(settings, palette: palette, wallpaper: wallpaper))
 +                            })
-+                                } |> deliverOnMainQueue).start(completed: { finish() })
++                                } |> deliverOnMainQueue).start(completed: {
++                                    finish()
++                                    if let warning, !SlopogramStreamerMode.isActive, self.currentContext === context {
++                                        let alert = NSAlert()
++                                        alert.messageText = "Theme imported without animation"
++                                        alert.informativeText = warning
++                                        alert.beginSheetModal(for: context.window, completionHandler: nil)
++                                    }
++                                })
 +                            } catch {
 +                                finish()
 +                                guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
@@ -211,5 +279,5 @@
 +            }
 +        }
      }
- 
+
      var currentContext:AccountContext? {

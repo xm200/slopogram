@@ -1,5 +1,29 @@
 # Milestone 1: a working Rust Telegram desktop client
 
+## Animated chat wallpapers — Apple Silicon test build
+
+**Authoring format.** Ship the colors, a still image of the first frame, and an optional silent H.264 MP4 together. The user selects one file in **Slopogram → Import Theme…**. An illustrated theme uses this layout
+
+```text
+Maomao.tdesktop-theme
+├── colors.tdesktop-theme
+├── background.jpg           (PNG also supported)
+└── slopogram/background.mp4
+```
+
+The video entry is a Slopogram extension. Telegram Desktop looks up the standard palette and JPEG/PNG entries, so its local importer can use the still image. Keep the **whole archive under 5 MiB** for sharing with Telegram Desktop. Start with a seamless 8-second loop at 720p, 24 fps, 8-bit SDR 4:2:0, around 1.5 Mb/s. A 1080p24 version around 3 Mb/s is an option when it fits alongside the poster. [Telegram Desktop theme loader](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/window/themes/window_theme.cpp)
+
+**Compatibility check.** A 1.65 MB synthetic 720p clip was added to temporary copies of all six existing AyuGram themes. The released-format Rust importer read all six palettes and returned their original wallpaper bytes. Maomao was 2.37 MB packed. Rei had only 409 bytes to spare under 5 MiB, so check the final ZIP size for each theme.
+
+**Resource baseline on Apple M4.** Each synthetic clip played through the hardware decoder for three real-time loops. All 576 frames decoded. The 720p clip used 1.65 MB on disk, 0.31 seconds of process CPU over 24 seconds, and 3.69 MB of additional sampled process memory after decoder setup. The 1080p clip used 3.28 MB, 0.27 CPU seconds, and 4.87 MB on the same measures. These short runs measure decoding only. The full player, macOS compositor, and battery impact need an in-chat measurement.
+
+1. **Import and restore.** The Rust reader bounds the optional entry to 16 MiB. The native importer validates the local H.264 track, rejects audio and external media references, and decodes the first frame. It installs the video under the local poster's resource ID before committing the theme settings. An isolated AccountManager/Postbox test applied Maomao's colors, poster, and MP4, reopened them in another process after moving the source, and checked static and invalid-video fallback.
+2. **Play in the chat.** The active conversation resolves the clip from its effective wallpaper, including per-chat overrides. An `AVPlayerLayer` above the poster becomes visible on the first decoded frame. A synthetic AppKit window exercised the actual player through a full loop and chat disappearance. [Apple’s looping player API](https://developer.apple.com/documentation/avfoundation/avplayerlooper)
+3. **Respect motion and power settings.** Power and visibility notifications tear down playback under Low Power Mode, Reduce Motion, animation-saving Lite Mode, Streamer Mode, or an inactive chat/window. The window fixture simulated a low-power change, verified the player layer was removed while the poster remained, then restored playback.
+4. **Before public release.** Measure scrolling, dropped frames, memory, and energy against the same still theme in a signed-in conversation. Check a per-chat override and an actual system Low Power Mode switch there. Test the sample's static fallback in official Telegram Desktop.
+
+For a later palette-driven effect, reuse the native animated gradient and derive its stops directly from the theme colors. A gradient that moves briefly when a chat opens needs no video asset and can stay idle between interactions.
+
 ## Current work: direct Telegram macOS fork with Rust Ayu features
 
 Corrected on 2026-11-16 after the user rejected the custom TGUIKit frontend and

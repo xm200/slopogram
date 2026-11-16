@@ -1,0 +1,124 @@
+diff --git a/packages/ChatUI/Sources/ChatUI/SlopogramWallpaperPlayer.swift b/packages/ChatUI/Sources/ChatUI/SlopogramWallpaperPlayer.swift
+new file mode 100644
+--- /dev/null
++++ b/packages/ChatUI/Sources/ChatUI/SlopogramWallpaperPlayer.swift
+@@ -0,0 +1,119 @@
++import AppKit
++import AVFoundation
++
++/// Owns one silent loop while the chat, window and system policies allow playback.
++final class SlopogramWallpaperPlayer {
++    private weak var container: NSView?
++    private let lowPower: () -> Bool
++    private let allowAnimations: () -> Bool
++    private var updateScheduled = false
++    private var source: URL?
++    private var visible = false
++    private var player: AVQueuePlayer?
++    private var looper: AVPlayerLooper?
++    private var playerLayer: AVPlayerLayer?
++    private var readyObservation: NSKeyValueObservation?
++    private var observers: [(NotificationCenter, NSObjectProtocol)] = []
++
++    init(container: NSView, lowPower: @escaping () -> Bool = { ProcessInfo.processInfo.isLowPowerModeEnabled }, allowAnimations: @escaping () -> Bool = { true }) {
++        self.container = container
++        self.lowPower = lowPower
++        self.allowAnimations = allowAnimations
++        let center = NotificationCenter.default
++        let workspace = NSWorkspace.shared.notificationCenter
++        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
++                     NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
++                     NSWindow.didDeminiaturizeNotification, NSWindow.didBecomeKeyNotification,
++                     NSWindow.didResignKeyNotification, Notification.Name.NSProcessInfoPowerStateDidChange] {
++            observe(center, name)
++        }
++        observe(workspace, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
++    }
++
++    deinit {
++        stop()
++        for (center, observer) in observers {
++            center.removeObserver(observer)
++        }
++    }
++
++    private func observe(_ center: NotificationCenter, _ name: Notification.Name) {
++        let observer = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
++            self?.scheduleUpdate()
++        }
++        observers.append((center, observer))
++    }
++
++    private func scheduleUpdate() {
++        guard !updateScheduled else { return }
++        updateScheduled = true
++        DispatchQueue.main.async { [weak self] in
++            guard let self else { return }
++            self.updateScheduled = false
++            self.updatePlayback()
++        }
++    }
++
++    func setSource(_ url: URL?) {
++        guard source != url else { return }
++        source = url
++        stop()
++        updatePlayback()
++    }
++
++    func setVisible(_ visible: Bool) {
++        self.visible = visible
++        updatePlayback()
++    }
++
++    func layout() {
++        playerLayer?.frame = container?.bounds ?? .zero
++        updatePlayback()
++    }
++
++    private func updatePlayback() {
++        guard visible, let source, source.isFileURL, let container, let window = container.window,
++              NSApp.isActive, window.isKeyWindow, window.isVisible, !window.isMiniaturized,
++              window.occlusionState.contains(.visible),
++              !container.isHiddenOrHasHiddenAncestor, !container.visibleRect.isEmpty,
++              !lowPower(), allowAnimations(), !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
++            stop()
++            return
++        }
++        guard player == nil else { return }
++        container.wantsLayer = true
++        guard let layer = container.layer else { return }
++        let queue = AVQueuePlayer()
++        queue.isMuted = true
++        let asset = AVURLAsset(url: source, options: [AVURLAssetReferenceRestrictionsKey: AVAssetReferenceRestrictions.forbidAll.rawValue])
++        let item = AVPlayerItem(asset: asset)
++        let loop = AVPlayerLooper(player: queue, templateItem: item)
++        let video = AVPlayerLayer(player: queue)
++        video.videoGravity = .resizeAspectFill
++        video.frame = container.bounds
++        video.isHidden = true
++        layer.addSublayer(video)
++        player = queue
++        looper = loop
++        playerLayer = video
++        readyObservation = video.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self, weak video] _, _ in
++            DispatchQueue.main.async {
++                guard let self, let video, self.playerLayer === video else { return }
++                video.isHidden = !video.isReadyForDisplay
++            }
++        }
++        queue.play()
++    }
++
++    private func stop() {
++        readyObservation?.invalidate()
++        readyObservation = nil
++        player?.pause()
++        looper?.disableLooping()
++        player?.removeAllItems()
++        playerLayer?.removeFromSuperlayer()
++        playerLayer = nil
++        looper = nil
++        player = nil
++    }
++}

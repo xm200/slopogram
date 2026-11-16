@@ -403,6 +403,8 @@ pub struct DesktopTheme {
     pub wallpaper: Option<Vec<u8>>,
     pub wallpaper_extension: Option<String>,
     pub wallpaper_tiled: bool,
+    pub video: Option<Vec<u8>>,
+    pub video_warning: Option<String>,
 }
 #[uniffi::export]
 pub async fn decode_desktop_theme(path: String) -> Result<DesktopTheme, EngineError> {
@@ -416,6 +418,8 @@ pub async fn decode_desktop_theme(path: String) -> Result<DesktopTheme, EngineEr
                 wallpaper: theme.wallpaper,
                 wallpaper_extension: theme.wallpaper_extension,
                 wallpaper_tiled: theme.wallpaper_tiled,
+                video: theme.video,
+                video_warning: theme.video_warning,
             });
         let _ = tx.send(result);
     });

@@ -1,0 +1,125 @@
+--- a/packages/TelegramTheme/Sources/TelegramTheme/WallpaperPath.swift
++++ b/packages/TelegramTheme/Sources/TelegramTheme/WallpaperPath.swift
+@@ -36,3 +36,10 @@
+ public func wallpaperMetadataPath(_ resource: TelegramMediaResource, settings: WallpaperSettings, gift: StarGift.UniqueGift) -> String {
+     return ApiEnvironment.containerURL!.appendingPathComponent("Wallpapers").path + "/" + resource.id.stringRepresentation + "\(settings.stringValue)" + "-\(gift.slug)" + "-metadata.json"
+ }
++
++/// An imported clip belongs to the same local resource as its persisted poster.
++public func slopogramWallpaperVideoURL(_ resource: LocalFileMediaResource) -> URL? {
++    return ApiEnvironment.containerURL?
++        .appendingPathComponent("Wallpapers/SlopogramVideo", isDirectory: true)
++        .appendingPathComponent(resource.id.stringRepresentation + ".mp4")
++}
+--- a/packages/ChatUI/Sources/ChatUI/ChatController.swift
++++ b/packages/ChatUI/Sources/ChatUI/ChatController.swift
+@@ -464,6 +464,57 @@
+     
+     private var backgroundMode: TableBackgroundMode?
+     private(set) var backgroundView: BackgroundView?
++    private var videoOverlay: View?
++    private var wallpaperPlayer: SlopogramWallpaperPlayer?
++    private var wallpaperResourceId: MediaResourceId?
++    private var chatAppeared = false
++    private var streamerActive = true
++
++    func setWallpaperVisible(_ visible: Bool) {
++        chatAppeared = visible
++        wallpaperPlayer?.setVisible(visible && !streamerActive)
++    }
++
++    func updateWallpaperPolicy(streamer: Bool) {
++        streamerActive = streamer
++        wallpaperPlayer?.setVisible(chatAppeared && !streamer)
++    }
++
++    private func updateWallpaperVideo(_ mode: TableBackgroundMode, background: BackgroundView) {
++        var resource: LocalFileMediaResource?
++        if chatInteraction.mode != .preview, case .background = mode,
++           let chatTheme, case let .image(representations, _) = chatTheme.wallpaper.wallpaper {
++            resource = representations.first?.resource as? LocalFileMediaResource
++        }
++        guard wallpaperResourceId != resource?.id else { return }
++        wallpaperResourceId = resource?.id
++        wallpaperPlayer = nil
++        videoOverlay?.removeFromSuperview()
++        videoOverlay = nil
++        guard let resource, let url = slopogramWallpaperVideoURL(resource),
++              FileManager.default.fileExists(atPath: url.path) else { return }
++
++        let overlay = View(frame: background.frame)
++        overlay.isEventLess = true
++        overlay.layer?.isOpaque = false
++        overlay.setAccessibilityElement(false)
++        addSubview(overlay, positioned: .above, relativeTo: background)
++        videoOverlay = overlay
++        let context = chatInteraction.context
++        let player = SlopogramWallpaperPlayer(container: overlay, allowAnimations: { [weak context] in
++            guard let context else { return false }
++            return !context.isLite(.animations) && !context.isLite(.video)
++        })
++        wallpaperPlayer = player
++        player.setSource(url)
++        player.setVisible(chatAppeared && !streamerActive)
++    }
++
++    public override func viewDidMoveToWindow() {
++        super.viewDidMoveToWindow()
++        wallpaperPlayer?.layout()
++    }
++
+     private var cachedEdgeColor: NSColor?
+     private var cachedEdgeColorMode: TableBackgroundMode?
+ 
+@@ -555,7 +606,10 @@
+             addSubview(bgView, positioned: .below, relativeTo: self.subviews.first)
+             self.backgroundView = bgView
+         }
+-        backgroundView?.backgroundMode = mode
++        if let backgroundView {
++            backgroundView.backgroundMode = mode
++            updateWallpaperVideo(mode, background: backgroundView)
++        }
+     }
+     
+     
+@@ -1269,6 +1323,10 @@
+ 
+         if let backgroundView = backgroundView {
+             transition.updateFrame(view: backgroundView, frame: NSMakeRect(shadowX, -(wFrame.height - frame.height), shadowWidth, wFrame.height))
++            if let videoOverlay {
++                transition.updateFrame(view: videoOverlay, frame: backgroundView.frame)
++                wallpaperPlayer?.layout()
++            }
+         }
+         transition.updateFrame(view: gradientMaskView, frame: tableView.frame)
+         
+@@ -4211,6 +4269,12 @@
+         
+         let groupsInCommon = GroupsInCommonContext(account: context.account, peerId: peerId)
+         self.groupsInCommon = groupsInCommon
++
++        let wallpaperLite = context.sharedContext.baseApplicationSettings |> map { $0.liteMode } |> distinctUntilChanged
++        presentationDisposable.add((combineLatest(context.ayuStreamerMode(), wallpaperLite)
++            |> deliverOnMainQueue).start(next: { [weak self] streamer, _ in
++                self?.genericView.updateWallpaperPolicy(streamer: streamer)
++            }))
+         
+         let monoforumTopics: Promise<[EngineChatList.Item]?> = Promise()
+ 
+@@ -11707,6 +11771,7 @@
+ 
+ 
+     public override func viewWillDisappear(_ animated: Bool) {
++        genericView.setWallpaperVisible(false)
+         cancelAlwaysUseAIRequest()
+         chatInteraction.invalidateDeferredSendActions()
+         super.viewWillDisappear(animated)
+@@ -11920,6 +11985,7 @@
+ 
+     public override func viewDidAppear(_ animated: Bool) {
+         super.viewDidAppear(animated)
++        genericView.setWallpaperVisible(true)
+         isAnalyticsVisible = true
+ 
+         isPushedGlobalBackground = true

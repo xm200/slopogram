@@ -58,6 +58,16 @@ JPEG or PNG from the adjacent `Wallpapers` folder. A standalone palette or
 color-only Desktop theme keeps your existing wallpaper. If automatic
 appearance is enabled, the app asks whether to turn it off before applying the theme.
 
+For an animated chat wallpaper, put a silent H.264 clip at
+`slopogram/background.mp4` inside the same theme ZIP as `colors.tdesktop-theme`
+and a `background.jpg` or `background.png` poster. An eight-second 720p24 loop
+and a matching first-frame poster work well. Slopogram accepts clips up to
+16 MiB and 30 seconds, up to 60 fps, with each dimension at most 1920 pixels.
+Import this file once. The active chat plays the loop, and macOS Low Power Mode,
+Reduce Motion, or Slopogram’s animation or video power-saving setting shows the
+poster. Leaving the chat or window also stops playback. Both assets are saved
+locally, so you can move the original theme after importing.
+
 Use your own external `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`; the fork does not
 fall back to upstream's embedded credentials. It uses a separate Slopogram Native
 application data directory. Existing grammers or installed Telegram sessions are

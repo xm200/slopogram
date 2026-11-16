@@ -10,6 +10,7 @@ use zip::ZipArchive;
 const MAX_ARCHIVE: u64 = 24 * 1024 * 1024;
 const MAX_COLORS: u64 = 1024 * 1024;
 const MAX_WALLPAPER: u64 = 16 * 1024 * 1024;
+const MAX_VIDEO: u64 = 16 * 1024 * 1024;
 const MAX_ENTRIES: usize = 256;
 
 pub struct DesktopTheme {
@@ -19,6 +20,8 @@ pub struct DesktopTheme {
     pub wallpaper: Option<Vec<u8>>,
     pub wallpaper_extension: Option<String>,
     pub wallpaper_tiled: bool,
+    pub video: Option<Vec<u8>>,
+    pub video_warning: Option<String>,
 }
 
 fn read_limited<R: Read>(reader: R, limit: u64) -> Result<Vec<u8>, String> {
@@ -173,18 +176,23 @@ pub fn decode(path: &Path) -> Result<DesktopTheme, String> {
         return Err("Theme archive exceeds size limit".into());
     }
     let bytes = read_limited(file, MAX_ARCHIVE)?;
-    let (colors, wallpaper) = if bytes.starts_with(b"PK") {
+    let (colors, wallpaper, video, video_warning) = if bytes.starts_with(b"PK") {
         let mut archive =
             ZipArchive::new(Cursor::new(bytes)).map_err(|_| "Invalid theme archive")?;
         if archive.len() > MAX_ENTRIES {
             return Err("Too many theme archive entries".into());
         }
         let mut indices = HashMap::new();
+        let mut video_index = None;
+        let mut video_duplicate = false;
         for index in 0..archive.len() {
             let entry = archive
-                .by_index(index)
+                .by_index_raw(index)
                 .map_err(|_| "Cannot read theme archive entry")?;
             let name = entry.name().to_ascii_lowercase();
+            if name == "slopogram/background.mp4" && video_index.replace(index).is_some() {
+                video_duplicate = true;
+            }
             if matches!(
                 name.as_str(),
                 "colors.tdesktop-theme"
@@ -239,13 +247,31 @@ pub fn decode(path: &Path) -> Result<DesktopTheme, String> {
         } else {
             None
         };
-        (colors, wallpaper)
+        let (video, video_warning) = if video_duplicate {
+            (None, Some("Duplicate animated wallpaper entry".to_string()))
+        } else if let Some(index) = video_index {
+            match archive.by_index(index) {
+                Ok(entry) if entry.size() <= MAX_VIDEO => match read_limited(entry, MAX_VIDEO) {
+                    Ok(bytes) if !bytes.is_empty() => (Some(bytes), None),
+                    _ => (None, Some("Cannot read animated wallpaper".to_string())),
+                },
+                _ => (
+                    None,
+                    Some("Animated wallpaper exceeds size limit or cannot be read".to_string()),
+                ),
+            }
+        } else {
+            (None, None)
+        };
+        (colors, wallpaper, video, video_warning)
     } else {
         if bytes.len() as u64 > MAX_COLORS {
             return Err("Theme colors exceed size limit".into());
         }
         (
             String::from_utf8(bytes).map_err(|_| "Theme colors are not UTF-8")?,
+            None,
+            None,
             None,
         )
     };
@@ -274,6 +300,8 @@ pub fn decode(path: &Path) -> Result<DesktopTheme, String> {
         wallpaper,
         wallpaper_extension,
         wallpaper_tiled,
+        video,
+        video_warning,
     })
 }
 
@@ -329,6 +357,56 @@ mod tests {
         let theme = decode(zip.path()).unwrap();
         assert!(theme.wallpaper_tiled);
         assert_eq!(theme.wallpaper_extension.as_deref(), Some("png"));
+    }
+    #[test]
+    fn optional_video_is_bounded_and_does_not_discard_static_theme() {
+        let valid = archive(&[
+            ("colors.tdesktop-theme", DARK),
+            ("slopogram/background.mp4", b"video"),
+        ]);
+        assert_eq!(
+            decode(valid.path()).unwrap().video.as_deref(),
+            Some(&b"video"[..])
+        );
+        let oversized = vec![0; MAX_VIDEO as usize + 1];
+        let invalid = archive(&[
+            ("colors.tdesktop-theme", DARK),
+            ("background.jpg", b"poster"),
+            ("slopogram/background.mp4", &oversized),
+        ]);
+        let theme = decode(invalid.path()).unwrap();
+        assert_eq!(theme.wallpaper.as_deref(), Some(&b"poster"[..]));
+        assert!(theme.video.is_none());
+        assert!(theme.video_warning.is_some());
+        let duplicate = archive(&[
+            ("colors.tdesktop-theme", DARK),
+            ("slopogram/background.mp4", b"a"),
+            ("SLOPOGRAM/BACKGROUND.MP4", b"b"),
+        ]);
+        assert!(decode(duplicate.path()).unwrap().video_warning.is_some());
+    }
+    #[test]
+    fn unsupported_video_compression_preserves_static_theme() {
+        let file = archive(&[
+            ("colors.tdesktop-theme", DARK),
+            ("background.jpg", b"poster"),
+            ("slopogram/background.mp4", b"video"),
+        ]);
+        let mut bytes = std::fs::read(file.path()).unwrap();
+        // Patch the central directory compression method for the video entry.
+        let name = b"slopogram/background.mp4";
+        let name_at = bytes
+            .windows(name.len())
+            .rposition(|window| window == name)
+            .unwrap();
+        let header = name_at - 46;
+        assert_eq!(&bytes[header..header + 4], b"PK\x01\x02");
+        bytes[header + 10..header + 12].copy_from_slice(&98u16.to_le_bytes());
+        std::fs::write(file.path(), bytes).unwrap();
+        let theme = decode(file.path()).unwrap();
+        assert_eq!(theme.wallpaper.as_deref(), Some(&b"poster"[..]));
+        assert!(theme.video.is_none());
+        assert!(theme.video_warning.is_some());
     }
     #[test]
     fn sparse_palettes_infer_background_or_use_light_fallback() {
