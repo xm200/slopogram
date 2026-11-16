@@ -1,0 +1,17 @@
+--- a/packages/EntertainmentUI/Sources/EntertainmentUI/EmojiesController.swift
++++ b/packages/EntertainmentUI/Sources/EntertainmentUI/EmojiesController.swift
+@@ -2294,6 +2294,14 @@
+         let arguments = Arguments(context: context, mode: self.mode, ignorePremium: ignorePremium, send: { [weak self] item, info, timeout, rect in
+             switch mode {
+             case .emoji, .stories:
++                if mode == .emoji, self?.chatInteraction != nil {
++                    let appearance = context.ayuLocalCosmeticsSnapshot()
++                    if appearance.enabled, let mapping = appearance.chatEmoji.first(where: { $0.fileId == item.file.fileId.id }) {
++                        self?.interactions?.sendEmoji(mapping.trigger, rect)
++                        _ = scrollToOnNextAppear.swap(info)
++                        return
++                    }
++                }
+                 if !ignorePremium, !context.isPremium && item.file.isPremiumEmoji, context.peerId != self?.chatInteraction?.peerId {
+                     showModalText(for: context.window, text: strings().emojiPackPremiumAlert, callback: { _ in
+                         FeatureNavigationHooks.shared.showPremiumBoarding(context, context.window, .premiumStickers, false, nil)

@@ -1,0 +1,11 @@
+--- a/submodules/TelegramCore/Sources/TelegramEngine/Messages/Stories.swift
++++ b/submodules/TelegramCore/Sources/TelegramEngine/Messages/Stories.swift
+@@ -3711,7 +3711,7 @@
+                 if wasAccepted {
+                     let storyReactionContext = account.storyReactionContext
+                     let stateManager: AccountStateManager = account.stateManager
+-                    weak let weakAccount = account
++                    weak var weakAccount = account
+                     let _ = (replayReady.get()
+                     |> filter { $0 }
+                     |> take(1)

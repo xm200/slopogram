@@ -1,0 +1,103 @@
+--- a/submodules/TelegramCore/Sources/State/AccountStateManager.swift
++++ b/submodules/TelegramCore/Sources/State/AccountStateManager.swift
+@@ -15,6 +15,21 @@
+     case messageId(MessageId)
+ }
+ 
++public enum MessageDeletionOrigin {
++    case interactiveLocal
++    case remoteConfirmed
++}
++
++public struct MessageDeletionEvent {
++    public let ids: [DeletedMessageId]
++    public let origin: MessageDeletionOrigin
++
++    init(ids: [DeletedMessageId], origin: MessageDeletionOrigin) {
++        self.ids = ids
++        self.origin = origin
++    }
++}
++
+ final class MessagesRemovedContext {
+     private var messagesRemovedInteractively = Set<DeletedMessageId>()
+     private var messagesRemovedRemotely = Set<DeletedMessageId>()
+@@ -279,6 +294,10 @@
+         
+         public var deletedMessages: Signal<[DeletedMessageId], NoError> {
+             return self.eventHub.deletedMessages
++        }
++
++        public var messageDeletionEvents: Signal<MessageDeletionEvent, NoError> {
++            return self.eventHub.messageDeletionEvents
+         }
+         
+         let messagesRemovedContext: MessagesRemovedContext
+@@ -1060,6 +1079,12 @@
+     public var deletedMessages: Signal<[DeletedMessageId], NoError> {
+         return self.impl.signalWith { impl, subscriber in
+             return impl.deletedMessages.start(next: subscriber.putNext, error: subscriber.putError, completed: subscriber.putCompletion)
++        }
++    }
++
++    public var messageDeletionEvents: Signal<MessageDeletionEvent, NoError> {
++        return self.impl.signalWith { impl, subscriber in
++            return impl.messageDeletionEvents.start(next: subscriber.putNext, error: subscriber.putError, completed: subscriber.putCompletion)
+         }
+     }
+     
+--- a/submodules/TelegramCore/Sources/State/AccountStateEventHub.swift
++++ b/submodules/TelegramCore/Sources/State/AccountStateEventHub.swift
+@@ -131,6 +131,11 @@
+     private let groupCallMessageUpdatesPipe = ValuePipe<[GroupCallMessageUpdate]>()
+     var groupCallMessageUpdates: Signal<[GroupCallMessageUpdate], NoError> {
+         return self.groupCallMessageUpdatesPipe.signal()
++    }
++
++    private let deletionOriginPipe = MessageDeletionEventPipe()
++    var messageDeletionEvents: Signal<MessageDeletionEvent, NoError> {
++        return self.deletionOriginPipe.events
+     }
+ 
+     private let deletedMessagesPipe = ValuePipe<[DeletedMessageId]>()
+@@ -300,6 +305,7 @@
+ 
+         if !events.deletedMessageIds.isEmpty {
+             self.deletedMessagesPipe.putNext(events.deletedMessageIds)
++            self.deletionOriginPipe.confirmed(events.deletedMessageIds)
+         }
+ 
+         if events.updateConfig {
+@@ -614,6 +620,7 @@
+ 
+     func notifyDeletedMessages(messageIds: [MessageId]) {
+         self.deletedMessagesPipe.putNext(messageIds.map { .messageId($0) })
++        self.deletionOriginPipe.interactive(messageIds.map { .messageId($0) })
+     }
+ 
+     /// Messages a stored-message confirmation deleted (`AccountStateManager.noteStoredMessageConfirmationDeletions`),
+@@ -621,6 +628,7 @@
+     func notifyConfirmedDeletions(_ ids: [DeletedMessageId]) {
+         if !ids.isEmpty {
+             self.deletedMessagesPipe.putNext(ids)
++            self.deletionOriginPipe.confirmed(ids)
+         }
+     }
+ 
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/State/MessageDeletionEventPipe.swift
+@@ -0,0 +1,14 @@
++import SwiftSignalKit
++
++final class MessageDeletionEventPipe {
++    private let pipe = ValuePipe<MessageDeletionEvent>()
++    var events: Signal<MessageDeletionEvent, NoError> { pipe.signal() }
++
++    func interactive(_ ids: [DeletedMessageId]) {
++        if !ids.isEmpty { pipe.putNext(MessageDeletionEvent(ids: ids, origin: .interactiveLocal)) }
++    }
++
++    func confirmed(_ ids: [DeletedMessageId]) {
++        if !ids.isEmpty { pipe.putNext(MessageDeletionEvent(ids: ids, origin: .remoteConfirmed)) }
++    }
++}

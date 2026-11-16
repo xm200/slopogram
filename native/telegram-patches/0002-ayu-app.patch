@@ -1,0 +1,913 @@
+--- a/Telegram-Mac/account/AccountContext.swift
++++ b/Telegram-Mac/account/AccountContext.swift
+@@ -16,6 +16,10 @@ import WalletContext
+ import HTMLBubbles
+ #endif
+ import ApiCredentials
++#if !SHARE
++import TelegramUtils
++import SlopogramAyu
++#endif
+ 
+ 
+ #if !SHARE
+@@ -916,6 +920,9 @@ final class AccountContext {
+         }))
+ 
+         #if !SHARE
++        let ayu = AyuAccountRuntime.account(account)
++        ayu.attach(account: account)
++        if !isSupport && !isExternal { ayu.installMenu(name: myPeer?.displayTitle) }
+         delay(2.0, closure: { [weak self] in
+             self?.deferredStartup()
+         })
+@@ -1056,6 +1063,9 @@ final class AccountContext {
+     }
+     
+     deinit {
++       #if !SHARE
++       AyuAccountRuntime.release(account)
++       #endif
+        cleanup()
+        #if !SHARE
+        let mainQueueContexts = self.mainQueueContexts
+@@ -1197,7 +1207,59 @@ final class AccountContext {
+ 
+ 
+     
++    func ayuSetChatEmoji(trigger: String, fileId: Int64?) {
++        AyuAccountRuntime.account(account).setChatEmoji(trigger: trigger, fileId: fileId)
++    }
++
++    func ayuLocalCosmeticsSnapshot() -> AyuLocalCosmetics {
++        #if !SHARE
++        return AyuAccountRuntime.account(account).localCosmeticsSnapshot()
++        #else
++        return .init(enabled: false, emoji: nil)
++        #endif
++    }
++
++    func ayuLocalCosmetics() -> Signal<AyuLocalCosmetics, NoError> {
++        #if !SHARE
++        return AyuAccountRuntime.account(account).localCosmetics
++        #else
++        return .single(.init(enabled: false, emoji: nil))
++        #endif
++    }
++
++    func ayuStreamerMode() -> Signal<Bool, NoError> {
++        #if !SHARE
++        return SlopogramStreamerMode.changes
++        #else
++        return .single(false)
++        #endif
++    }
++
++    func ayuRetainedHistory(chat: PeerId) -> Signal<[AyuRetainedText], NoError> {
++        #if !SHARE
++        return AyuAccountRuntime.account(account).retainedHistory(chat: chat.toInt64())
++        #else
++        return .single([])
++        #endif
++    }
++
++    func ayuObserveMessages(_ messages: [Message], chat: PeerId) {
++        #if !SHARE
++        let observed = messages.filter { message in
++            message.id.namespace == Namespaces.Message.Cloud && [Namespaces.Peer.CloudUser, Namespaces.Peer.CloudGroup, Namespaces.Peer.CloudChannel].contains(message.id.peerId.namespace)
++        }.map { message in
++            AyuMessage(chatId: message.id.peerId.toInt64(), id: message.id.id, text: message.text, sender: message.author?.displayTitle ?? "", outgoing: !message.effectivelyIncoming(account.peerId), sentAt: Int64(message.timestamp), editedAt: message.editedTime.map(Int64.init), globalIdEligible: message.id.peerId.namespace == Namespaces.Peer.CloudUser || message.id.peerId.namespace == Namespaces.Peer.CloudGroup, authorPeerId: message.author?.id.toInt64())
++        }
++        let ayu = AyuAccountRuntime.account(account)
++        ayu.selectChat(chat.toInt64())
++        ayu.observe(observed)
++        #endif
++    }
++
+     func applyMaxReadIndex(for location: ChatLocation, contextHolder: Atomic<ChatLocationContextHolder?>, messageIndex: MessageIndex) {
++        #if !SHARE
++        guard !SlopogramStreamerMode.isActive, !AyuAccountRuntime.account(account).suppressAutomaticReads else { return }
++        #endif
+         switch location {
+         case .peer:
+             let _ = self.engine.messages.applyMaxReadIndexInteractively(index: messageIndex).start()
+--- /dev/null
++++ b/Telegram-Mac/account/AyuAccountRuntime.swift
+@@ -0,0 +1,491 @@
++import AppKit
++import Foundation
++import SlopogramAyu
++import Postbox
++import TelegramCore
++import TelegramUtils
++import TelegramContext
++import SwiftSignalKit
++
++private actor AyuAccountWorker {
++    let features: AyuFeatures
++    private var tail: Task<Void, Never>?
++    init(path: String) { features = AyuFeatures(dataDir: path) }
++    private func perform<T: Sendable>(_ action: @escaping @Sendable (AyuFeatures) async throws -> T) async throws -> T {
++        let previous = tail
++        let features = features
++        let operation = Task { () -> Result<T, Error> in
++            await previous?.value
++            do { return .success(try await action(features)) } catch { return .failure(error) }
++        }
++        tail = Task { _ = await operation.value }
++        return try await operation.value.get()
++    }
++    func loadCosmetics() async throws -> LocalCosmetics { try await perform { try await $0.localCosmetics() } }
++    func saveCosmetics(_ value: LocalCosmetics) async throws { try await perform { try await $0.setLocalCosmetics(value: value) } }
++    func load() async throws -> FeaturePolicy { try await perform { try await $0.policy() } }
++    func save(_ policy: FeaturePolicy) async throws { try await perform { try await $0.setPolicy(policy: policy) } }
++    func observe(_ messages: [AyuMessage]) async throws { try await perform { try await $0.observeBatch(messages: messages) } }
++    func delete(chat: Int64, ids: [Int32], remote: Bool) async throws {
++        try await perform { if remote { try await $0.recordRemoteDeletion(chatId: chat, ids: ids) } else { try await $0.recordLocalDeletion(chatId: chat, ids: ids) } }
++    }
++    func deleteGlobal(ids: [Int32], remote: Bool) async throws {
++        try await perform { if remote { try await $0.recordRemoteGlobalDeletion(ids: ids) } else { try await $0.recordLocalGlobalDeletion(ids: ids) } }
++    }
++    func clear() async throws { try await perform { try await $0.clearHistory() } }
++    func deletedHistory(chat: Int64) async throws -> [ArchivedMessage] { try await perform { try await $0.deletedHistory(chatId: chat) } }
++    func history(chat: Int64) async throws -> [ArchivedMessage] { try await perform { try await $0.history(chatId: chat) } }
++}
++
++final class AyuTerminationGate {
++    private var pending = false
++    func begin() -> Bool {
++        guard !pending else { return false }
++        pending = true
++        return true
++    }
++}
++
++final class AyuAccountRuntime: NSObject, @unchecked Sendable {
++    private static let registryLock = NSLock()
++    private static var registry: [String: AyuAccountRuntime] = [:]
++    private static func queuedTails() -> [Task<Void, Never>] {
++        registryLock.lock(); let runtimes = Array(registry.values); registryLock.unlock()
++        return runtimes.compactMap { $0.queuedTail() }
++    }
++    static func flushAll() async {
++        for tail in queuedTails() { await tail.value }
++    }
++    private func queuedTail() -> Task<Void, Never>? {
++        lock.lock(); defer { lock.unlock() }; return tail
++    }
++    static func installGhostProvider() {
++        SlopogramGhostPolicy.installProvider { path, control in
++            registryLock.lock(); let runtime = registry[path]; registryLock.unlock()
++            guard let runtime else { return true }
++            runtime.lock.lock(); let policy = runtime.cached; runtime.lock.unlock()
++            guard let policy else { return true }
++            switch control {
++            case .typing: return policy.suppressTyping
++            case .online: return policy.suppressOnlineStatus
++            @unknown default: return true
++            }
++        }
++    }
++    static func account(_ account: Account) -> AyuAccountRuntime {
++        let key = account.basePath
++        registryLock.lock()
++        defer { registryLock.unlock() }
++        if let current = registry[key] { return current }
++        let runtime = AyuAccountRuntime(path: key, ordinal: registry.count + 1)
++        registry[key] = runtime
++        return runtime
++    }
++    static func release(_ account: Account) {
++        registryLock.lock()
++        let runtime = registry[account.basePath]
++        registryLock.unlock()
++        _ = runtime?.detach()
++    }
++    private let basePath: String
++    private let ordinal: Int
++    private var activeChat: Int64?
++    private var lastObserved: [AyuMessage] = []
++    private var deletionSubscription: Disposable?
++    private var versionSubscription: Disposable?
++    private weak var attachedAccount: Account?
++    private var versionEpoch = 0
++    private var versionAttaching = false
++    private var attachmentCount = 0
++    private var subscriptionEpoch = 0
++    private let lock = NSLock()
++    private var cached: FeaturePolicy?
++    private var cosmetics: LocalCosmetics?
++    private let cosmeticsValue = ValuePromise<AyuLocalCosmetics>(.init(enabled: false, emoji: nil), ignoreRepeated: true)
++    var localCosmetics: Signal<AyuLocalCosmetics, NoError> { cosmeticsValue.get() }
++    func localCosmeticsSnapshot() -> AyuLocalCosmetics {
++        lock.lock(); defer { lock.unlock() }
++        guard let value = cosmetics else { return .init(enabled: false, emoji: nil) }
++        return .init(enabled: value.localPremium, emoji: value.emojiStatus, profileColor: value.profileColor, chatEmoji: value.chatEmoji.map { .init(trigger: $0.trigger, fileId: $0.fileId) })
++    }
++    private var premiumItem: NSMenuItem?
++    private var emojiItem: NSMenuItem?
++    private var clearEmojiItem: NSMenuItem?
++    private var profileColorItem: NSMenuItem?
++    private var archiveGeneration = 0
++    private var clearInProgress = false
++    private let worker: AyuAccountWorker
++    private var menuItem: NSMenuItem?
++    private var clearItem: NSMenuItem?
++    private var tail: Task<Void, Never>?
++    private let archiveChanges = ValuePromise<Int>(0, ignoreRepeated: true)
++    private var archiveRevision = 0
++
++    private func notifyArchiveChanged() {
++        DispatchQueue.main.async { [weak self] in
++            guard let self else { return }
++            self.archiveRevision &+= 1
++            self.archiveChanges.set(self.archiveRevision)
++        }
++    }
++    func retainedHistory(chat: Int64) -> Signal<[AyuRetainedText], NoError> {
++        return archiveChanges.get() |> mapToSignal { [weak self] _ -> Signal<[AyuRetainedText], NoError> in
++            guard let self, let generation = self.archiveReadGeneration() else { return .single([]) }
++            return Signal<[AyuRetainedText], NoError> { subscriber in
++                let cancelled = Atomic(value: false)
++                self.schedule { [weak self] in
++                    guard let self else { if !cancelled.with({ $0 }) { subscriber.putNext([]); subscriber.putCompletion() }; return }
++                    if !self.archiveReadIsCurrent(generation) { if !cancelled.with({ $0 }) { subscriber.putNext([]); subscriber.putCompletion() }; return }
++                    do {
++                        let entries = try await self.worker.deletedHistory(chat: chat)
++                        let rows = entries.compactMap { item -> AyuRetainedText? in
++                            guard let version = item.versions.last, !version.text.isEmpty else { return nil }
++                            return AyuRetainedText(chatId: item.chatId, messageId: item.messageId, timestamp: version.sentAt, text: version.text, sender: version.sender, authorPeerId: version.authorPeerId, outgoing: version.outgoing)
++                        }
++                        if !cancelled.with({ $0 }) { subscriber.putNext(self.archiveReadIsCurrent(generation) ? rows : []); subscriber.putCompletion() }
++                    } catch {
++                        self.showFailure()
++                        if !cancelled.with({ $0 }) { subscriber.putNext([]); subscriber.putCompletion() }
++                    }
++                }
++                return ActionDisposable { _ = cancelled.swap(true) }
++            }
++        } |> distinctUntilChanged
++    }
++
++    private init(path: String, ordinal: Int) {
++        let directory = URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent("slopogram-ayu", isDirectory: true).path
++        self.basePath = path
++        self.ordinal = ordinal
++        worker = AyuAccountWorker(path: directory)
++        super.init()
++        schedule { [weak self] in
++            guard let self else { return }
++            do {
++                let value = try await self.worker.load(); self.publish(value)
++                let cosmetic = try await self.worker.loadCosmetics(); self.publishCosmetics(cosmetic)
++            } catch { self.showFailure() }
++        }
++    }
++    private func archiveReadGeneration() -> Int? {
++        lock.lock(); defer { lock.unlock() }
++        return cached != nil && !clearInProgress ? archiveGeneration : nil
++    }
++    private func archiveReadIsCurrent(_ generation: Int) -> Bool {
++        lock.lock(); defer { lock.unlock() }
++        return archiveGeneration == generation && cached != nil && !clearInProgress
++    }
++    var suppressAutomaticReads: Bool {
++        lock.lock(); defer { lock.unlock() }
++        return cached?.suppressReadReceipts ?? true
++    }
++    private func publish(_ policy: FeaturePolicy) {
++        lock.lock()
++        let activatedOnLoad = cached == nil
++        cached = policy
++        let initialSnapshot = activatedOnLoad ? lastObserved : []
++        lock.unlock()
++        SlopogramGhostPolicy.notifyPolicyChanged(path: basePath)
++        refreshVersionSubscription()
++        if !initialSnapshot.isEmpty { observe(initialSnapshot) }
++        notifyArchiveChanged()
++        DispatchQueue.main.async { [weak self] in self?.refreshMenu() }
++    }
++    private func publishCosmetics(_ value: LocalCosmetics) {
++        lock.lock(); cosmetics = value; lock.unlock()
++        cosmeticsValue.set(.init(enabled: value.localPremium, emoji: value.emojiStatus, profileColor: value.profileColor, chatEmoji: value.chatEmoji.map { .init(trigger: $0.trigger, fileId: $0.fileId) }))
++        DispatchQueue.main.async { [weak self] in self?.refreshMenu() }
++    }
++    private func updateCosmetics(_ transform: @escaping (LocalCosmetics) -> LocalCosmetics) {
++        lock.lock(); let current = cosmetics; lock.unlock()
++        guard current != nil else { return }
++        [premiumItem, emojiItem, clearEmojiItem, profileColorItem].forEach { $0?.isEnabled = false }
++        schedule { [weak self] in
++            guard let self else { return }
++            do { let latest = try await self.worker.loadCosmetics(); let value = transform(latest); try await self.worker.saveCosmetics(value); self.publishCosmetics(value) }
++            catch {
++                self.showFailure()
++                if let latest = try? await self.worker.loadCosmetics() { self.publishCosmetics(latest) }
++                else { DispatchQueue.main.async { [weak self] in self?.refreshMenu() } }
++            }
++        }
++    }
++    @objc private func toggleLocalPremium(_ sender: NSMenuItem) {
++        updateCosmetics { value in var value = value; value.localPremium.toggle(); return value }
++    }
++    @objc private func chooseLocalEmoji(_ sender: NSMenuItem) {
++        let alert = NSAlert()
++        alert.messageText = "Set local emoji status"
++        alert.informativeText = "Enter one emoji. It appears only on this Mac."
++        alert.addButton(withTitle: "Save"); alert.addButton(withTitle: "Cancel")
++        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
++        lock.lock(); field.stringValue = cosmetics?.emojiStatus ?? ""; lock.unlock()
++        alert.accessoryView = field
++        guard alert.runModal() == .alertFirstButtonReturn else { return }
++        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard value.count == 1, value.unicodeScalars.contains(where: { $0.properties.isEmojiPresentation || $0.value == 0xfe0f }) else {
++            let invalid = NSAlert(); invalid.messageText = "Enter a single emoji"; invalid.runModal(); return
++        }
++        updateCosmetics { current in var current = current; current.emojiStatus = value; return current }
++    }
++    @objc private func clearLocalEmoji(_ sender: NSMenuItem) {
++        updateCosmetics { value in var value = value; value.emojiStatus = nil; return value }
++    }
++    private func refreshMenu() {
++        lock.lock(); let policy = cached; let clearing = clearInProgress; lock.unlock()
++        let ghost = policy.map { $0.suppressReadReceipts && $0.suppressTyping && $0.suppressOnlineStatus } ?? false
++        menuItem?.state = ghost ? .on : .off
++        lock.lock(); let cosmetic = cosmetics; lock.unlock()
++        premiumItem?.state = cosmetic?.localPremium == true ? .on : .off
++        [premiumItem, emojiItem, clearEmojiItem, profileColorItem].forEach { $0?.isEnabled = cosmetic != nil }
++        [menuItem, clearItem].forEach { $0?.isEnabled = policy != nil && !clearing }
++    }
++    private func finishClearing() -> FeaturePolicy? {
++        lock.lock(); clearInProgress = false; let policy = cached; lock.unlock()
++        return policy
++    }
++    private func showFailure() {
++        DispatchQueue.main.async {
++            let alert = NSAlert()
++            alert.messageText = "Ayu operation failed"
++            alert.informativeText = "Check access to the Slopogram application support directory. The requested change may not have been saved."
++            alert.runModal()
++        }
++    }
++    func installMenu(name: String?) {
++        DispatchQueue.main.async { [weak self] in
++            guard let self, self.menuItem == nil else { return }
++            if SlopogramStreamerMode.isActive {
++                SlopogramStreamerMode.whenDisabled { [weak self] in self?.installMenu(name: name) }
++                return
++            }
++            guard let menu = NSApp.mainMenu?.item(at: 0)?.submenu else { return }
++            self.lock.lock(); let attached = self.attachmentCount > 0; self.lock.unlock()
++            guard attached else { return }
++            let label = name.flatMap { $0.isEmpty ? nil : "\($0) (Account \(self.ordinal))" } ?? "Account \(self.ordinal)"
++            let item = NSMenuItem(title: "\(label): Ghost mode", action: #selector(self.toggleGhostMode), keyEquivalent: "")
++            item.target = self; item.isEnabled = false; menu.addItem(.separator()); menu.addItem(item); self.menuItem = item
++            let clear = NSMenuItem(title: "\(label): Clear local message history…", action: #selector(self.clearHistory), keyEquivalent: "")
++            clear.target = self; clear.isEnabled = false; menu.addItem(clear); self.clearItem = clear
++            let premium = NSMenuItem(title: "\(label): Local Premium (only on this Mac)", action: #selector(self.toggleLocalPremium), keyEquivalent: "")
++            premium.target = self; menu.addItem(premium); self.premiumItem = premium
++            let emoji = NSMenuItem(title: "\(label): Set local emoji status…", action: #selector(self.chooseLocalEmoji), keyEquivalent: "")
++            emoji.target = self; menu.addItem(emoji); self.emojiItem = emoji
++            let clearEmoji = NSMenuItem(title: "\(label): Clear local emoji status", action: #selector(self.clearLocalEmoji), keyEquivalent: "")
++            clearEmoji.target = self; menu.addItem(clearEmoji); self.clearEmojiItem = clearEmoji
++            let colors = NSMenuItem(title: "\(label): Local profile color", action: nil, keyEquivalent: "")
++            let colorMenu = NSMenu(title: "Local profile color")
++            for (title, color): (String, UInt32?) in [("System", nil), ("Blue", 0x3897f0), ("Purple", 0x9a69df), ("Teal", 0x22a991), ("Orange", 0xe28a42), ("Pink", 0xdd6e9e)] {
++                let entry = NSMenuItem(title: title, action: #selector(self.chooseProfileColor), keyEquivalent: "")
++                entry.target = self; entry.representedObject = color.map { NSNumber(value: $0) }; colorMenu.addItem(entry)
++            }
++            colors.submenu = colorMenu; menu.addItem(colors); self.profileColorItem = colors
++            self.refreshMenu()
++        }
++    }
++    @objc private func toggleGhostMode(_ sender: NSMenuItem) {
++        lock.lock(); let current = cached; lock.unlock()
++        guard let current else { return }
++        var updated = current
++        let enabled = !(current.suppressReadReceipts && current.suppressTyping && current.suppressOnlineStatus)
++        updated.suppressReadReceipts = enabled; updated.suppressTyping = enabled; updated.suppressOnlineStatus = enabled
++        let requested = updated
++        [menuItem, clearItem].forEach { $0?.isEnabled = false }
++        schedule { [weak self] in
++            guard let self else { return }
++            do { try await self.worker.save(requested); self.publish(requested) }
++            catch { self.showFailure(); self.publish(current) }
++        }
++    }
++    @objc private func chooseProfileColor(_ sender: NSMenuItem) {
++        let color = (sender.representedObject as? NSNumber)?.uint32Value
++        updateCosmetics { value in var value = value; value.profileColor = color; return value }
++    }
++    func setChatEmoji(trigger: String, fileId: Int64?) {
++        updateCosmetics { value in
++            var value = value
++            value.chatEmoji.removeAll { $0.trigger == trigger }
++            if let fileId { value.chatEmoji.append(LocalChatEmoji(trigger: trigger, fileId: fileId)) }
++            return value
++        }
++    }
++    private func schedule(_ action: @escaping @Sendable () async -> Void) {
++        lock.lock()
++        let previous = tail
++        tail = Task { await previous?.value; await action() }
++        lock.unlock()
++    }
++    func observe(_ messages: [AyuMessage]) {
++        lock.lock(); if !clearInProgress { lastObserved = messages }; let epoch = subscriptionEpoch; let generation = archiveGeneration; lock.unlock()
++        guard !messages.isEmpty else { return }
++        schedule { [weak self] in
++            guard let self, self.archiveAttachmentIsCurrent(epoch, generation: generation) else { return }
++            do { try await self.worker.observe(messages); self.notifyArchiveChanged() } catch { self.showFailure() }
++        }
++    }
++
++    func attach(account: Account) {
++        lock.lock()
++        attachmentCount += 1
++        attachedAccount = account
++        guard attachmentCount == 1 else { lock.unlock(); return }
++        subscriptionEpoch += 1
++        let epoch = subscriptionEpoch
++        lock.unlock()
++        let subscription = account.stateManager.messageDeletionEvents.start(next: { [weak self] event in
++            guard let self else { return }
++            let remote: Bool
++            switch event.origin {
++            case .remoteConfirmed: remote = true
++            case .interactiveLocal: remote = false
++            @unknown default: return
++            }
++            guard let generation = self.currentDeletionGeneration(epoch, remote: remote) else { return }
++            let events = event.ids
++            var grouped: [Int64: [Int32]] = [:]
++            var global: [Int32] = []
++            for event in events {
++                switch event {
++                case let .messageId(id) where id.namespace == Namespaces.Message.Cloud && [Namespaces.Peer.CloudUser, Namespaces.Peer.CloudGroup, Namespaces.Peer.CloudChannel].contains(id.peerId.namespace):
++                    grouped[id.peerId.toInt64(), default: []].append(id.id)
++                case let .global(id): global.append(id)
++                default: break
++                }
++            }
++            if !global.isEmpty {
++                let globalIds = global
++                self.schedule { [weak self] in
++                    guard let self, self.deletionIsCurrent(epoch, generation: generation, remote: remote) else { return }
++                    do { try await self.worker.deleteGlobal(ids: globalIds, remote: remote); self.notifyArchiveChanged() } catch { self.showFailure() }
++                }
++            }
++            for (chat, ids) in grouped.sorted(by: { $0.key < $1.key }) {
++                self.schedule { [weak self] in
++                    guard let self, self.deletionIsCurrent(epoch, generation: generation, remote: remote) else { return }
++                    do { try await self.worker.delete(chat: chat, ids: ids, remote: remote); self.notifyArchiveChanged() } catch { self.showFailure() }
++                }
++            }
++        })
++        lock.lock()
++        let keep = attachmentCount > 0 && subscriptionEpoch == epoch
++        if keep { deletionSubscription = subscription }
++        lock.unlock()
++        if !keep { subscription.dispose() }
++        refreshVersionSubscription()
++    }
++    private func currentDeletionGeneration(_ epoch: Int, remote: Bool) -> Int? {
++        lock.lock(); defer { lock.unlock() }
++        let valid = attachmentCount > 0 && subscriptionEpoch == epoch
++        return valid ? archiveGeneration : nil
++    }
++    private func deletionIsCurrent(_ epoch: Int, generation: Int, remote: Bool) -> Bool {
++        lock.lock(); defer { lock.unlock() }
++        return attachmentCount > 0 && subscriptionEpoch == epoch && archiveGeneration == generation
++    }
++    private func archiveAttachmentIsCurrent(_ epoch: Int, generation: Int) -> Bool {
++        lock.lock(); defer { lock.unlock() }
++        return attachmentCount > 0 && subscriptionEpoch == epoch && archiveGeneration == generation
++    }
++    private func refreshVersionSubscription() {
++        lock.lock()
++        let enabled = attachmentCount > 0
++        guard enabled, let account = attachedAccount else {
++            versionEpoch += 1; versionAttaching = false
++            let previous = versionSubscription; versionSubscription = nil
++            lock.unlock(); previous?.dispose(); return
++        }
++        guard versionSubscription == nil, !versionAttaching else { lock.unlock(); return }
++        versionAttaching = true; versionEpoch += 1
++        let epoch = versionEpoch
++        let ownPeerId = account.peerId
++        lock.unlock()
++        let subscription = account.postbox.committedMessageVersions().start(next: { [weak self] messages in
++            self?.observeCommitted(messages, ownPeerId: ownPeerId, epoch: epoch)
++        })
++        lock.lock()
++        let keep = versionEpoch == epoch && attachmentCount > 0
++        if keep { versionSubscription = subscription; versionAttaching = false }
++        lock.unlock()
++        if !keep { subscription.dispose() }
++    }
++    private func versionGeneration(_ epoch: Int) -> Int? {
++        lock.lock(); defer { lock.unlock() }
++        return versionEpoch == epoch && attachmentCount > 0 ? archiveGeneration : nil
++    }
++    private func versionIsCurrent(_ epoch: Int, generation: Int) -> Bool {
++        lock.lock(); defer { lock.unlock() }
++        return versionEpoch == epoch && attachmentCount > 0 && archiveGeneration == generation
++    }
++    private func observeCommitted(_ messages: [Message], ownPeerId: PeerId, epoch: Int) {
++        guard let generation = versionGeneration(epoch) else { return }
++        let records = messages.filter { message in
++            message.id.namespace == Namespaces.Message.Cloud && [Namespaces.Peer.CloudUser, Namespaces.Peer.CloudGroup, Namespaces.Peer.CloudChannel].contains(message.id.peerId.namespace)
++        }.map { message in
++            AyuMessage(chatId: message.id.peerId.toInt64(), id: message.id.id, text: message.text, sender: message.author?.displayTitle ?? "", outgoing: !message.effectivelyIncoming(ownPeerId), sentAt: Int64(message.timestamp), editedAt: message.editedTime.map(Int64.init), globalIdEligible: message.id.peerId.namespace == Namespaces.Peer.CloudUser || message.id.peerId.namespace == Namespaces.Peer.CloudGroup, authorPeerId: message.author?.id.toInt64())
++        }
++        guard !records.isEmpty else { return }
++        schedule { [weak self] in
++            guard let self, self.versionIsCurrent(epoch, generation: generation) else { return }
++            do { try await self.worker.observe(records); self.notifyArchiveChanged() } catch { self.showFailure() }
++        }
++    }
++    private func detach() -> Bool {
++        lock.lock()
++        attachmentCount -= 1
++        let last = attachmentCount <= 0
++        if last { subscriptionEpoch += 1 }
++        let disposable = last ? deletionSubscription : nil
++        let versions = last ? versionSubscription : nil
++        if last { deletionSubscription = nil; versionSubscription = nil; versionEpoch += 1; versionAttaching = false; attachedAccount = nil; lastObserved = []; activeChat = nil }
++        lock.unlock()
++        disposable?.dispose(); versions?.dispose()
++        if last {
++            DispatchQueue.main.async { [self] in
++                lock.lock(); let detached = attachmentCount == 0; lock.unlock()
++                guard detached else { return }
++                for item in [menuItem, clearItem, premiumItem, emojiItem, clearEmojiItem, profileColorItem].compactMap({ $0 }) { item.menu?.removeItem(item) }
++                menuItem = nil; clearItem = nil; premiumItem = nil; emojiItem = nil; clearEmojiItem = nil; profileColorItem = nil
++            }
++        }
++        return last
++    }
++    func selectChat(_ chat: Int64) {
++        lock.lock(); activeChat = chat; lock.unlock()
++    }
++    func readArchivedHistory(chat: Int64, completion: @escaping @Sendable ([ArchivedMessage]?) -> Void) {
++        schedule { [weak self] in
++            guard let self else { completion(nil); return }
++            do { completion(try await self.worker.history(chat: chat)) }
++            catch { self.showFailure(); completion(nil) }
++        }
++    }
++    func clearHistoryData(completion: @escaping @Sendable (Bool) -> Void) {
++        lock.lock()
++        guard !clearInProgress, cached != nil else { lock.unlock(); completion(false); return }
++        clearInProgress = true
++        archiveGeneration += 1
++        lastObserved = []
++        let previous = tail
++        tail = Task { [weak self] in
++            await previous?.value
++            guard let self else { completion(false); return }
++            var success = true
++            do { try await self.worker.clear() } catch { success = false; self.showFailure() }
++            _ = self.finishClearing()
++            self.notifyArchiveChanged()
++            DispatchQueue.main.async { [weak self] in self?.refreshMenu() }
++            completion(success)
++        }
++        lock.unlock()
++        notifyArchiveChanged()
++        DispatchQueue.main.async { [weak self] in self?.refreshMenu() }
++    }
++    @objc private func clearHistory(_ sender: NSMenuItem) {
++        let alert = NSAlert()
++        alert.messageText = "Clear local message history?"
++        alert.informativeText = "This removes saved message versions for this account from this device. Saving continues afterward; Telegram messages are unchanged."
++        alert.addButton(withTitle: "Clear history"); alert.addButton(withTitle: "Cancel")
++        guard alert.runModal() == .alertFirstButtonReturn else { return }
++        clearHistoryData { _ in }
++    }
++}
+--- a/packages/TelegramContext/Sources/TelegramContext/AccountContextProtocol.swift
++++ b/packages/TelegramContext/Sources/TelegramContext/AccountContextProtocol.swift
+@@ -14,10 +14,49 @@ import DiceCache
+ import CaptureExclusion
+ #endif
+ 
++public struct AyuRetainedText: Equatable {
++    public let chatId: Int64
++    public let messageId: Int32
++    public let timestamp: Int64
++    public let text: String
++    public let sender: String
++    public let authorPeerId: Int64?
++    public let outgoing: Bool
++    public init(chatId: Int64, messageId: Int32, timestamp: Int64, text: String, sender: String, authorPeerId: Int64?, outgoing: Bool) {
++        self.chatId = chatId; self.messageId = messageId; self.timestamp = timestamp; self.text = text
++        self.sender = sender; self.authorPeerId = authorPeerId; self.outgoing = outgoing
++    }
++}
++
++public struct AyuChatEmoji: Equatable {
++    public let trigger: String
++    public let fileId: Int64
++    public init(trigger: String, fileId: Int64) { self.trigger = trigger; self.fileId = fileId }
++}
++
++public struct AyuLocalCosmetics: Equatable {
++    public let enabled: Bool
++    public let emoji: String?
++    public let profileColor: UInt32?
++    public let chatEmoji: [AyuChatEmoji]
++    public init(enabled: Bool, emoji: String?, profileColor: UInt32? = nil, chatEmoji: [AyuChatEmoji] = []) { self.enabled = enabled; self.emoji = emoji; self.profileColor = profileColor; self.chatEmoji = chatEmoji }
++    public func decoration(realPremium: Bool) -> String {
++        guard enabled else { return "" }
++        return [realPremium ? nil : "★", emoji].compactMap { $0 }.joined(separator: " ")
++    }
++    public var accessibilityDescription: String { enabled ? (emoji.map { "Local Premium, emoji status \($0)" } ?? "Local Premium") : "" }
++}
++
+ public protocol AccountContextProtocol: AnyObject {
+     associatedtype Shared: SharedAccountContextProtocol
+     var sharedContext: Shared { get }
+ 
++    func ayuSetChatEmoji(trigger: String, fileId: Int64?)
++    func ayuLocalCosmeticsSnapshot() -> AyuLocalCosmetics
++    func ayuLocalCosmetics() -> Signal<AyuLocalCosmetics, NoError>
++    func ayuStreamerMode() -> Signal<Bool, NoError>
++    func ayuRetainedHistory(chat: PeerId) -> Signal<[AyuRetainedText], NoError>
++    func ayuObserveMessages(_ messages: [Message], chat: PeerId)
+     var account: Account { get }
+     var window: Window { get }
+     var engine: TelegramEngine { get }
+@@ -104,6 +143,12 @@ public protocol AccountContextProtocol: AnyObject {
+ }
+ 
+ public extension AccountContextProtocol {
++    func ayuSetChatEmoji(trigger: String, fileId: Int64?) {}
++    func ayuLocalCosmeticsSnapshot() -> AyuLocalCosmetics { .init(enabled: false, emoji: nil) }
++    func ayuLocalCosmetics() -> Signal<AyuLocalCosmetics, NoError> { .single(.init(enabled: false, emoji: nil)) }
++    func ayuStreamerMode() -> Signal<Bool, NoError> { .single(false) }
++    func ayuRetainedHistory(chat: PeerId) -> Signal<[AyuRetainedText], NoError> { .single([]) }
++    func ayuObserveMessages(_ messages: [Message], chat: PeerId) {}
+     func isLite() -> Bool {
+         return isLite(.any)
+     }
+--- a/packages/ChatUI/Sources/ChatUI/ChatController.swift
++++ b/packages/ChatUI/Sources/ChatUI/ChatController.swift
+@@ -10,6 +10,7 @@ import ThemeSettings
+ import DustLayer
+ import TelegramMedia
+ import FoundationUtils
++import GeneralRows
+ import AlertsUI
+ import BoostUI
+ import CaptureExclusion
+@@ -122,14 +123,105 @@ extension ChatHistoryLocation {
+ 
+ 
+ 
++private final class AyuRetainedRowItem: GeneralTextRowItem {
++    let outgoing: Bool
++    let bubbleColor: NSColor
++    let deletedLabel: String
++    let iconIndex: Int
++    let metadataColor: NSColor
++    private var measuredWidth: CGFloat
++
++    init(_ size: NSSize, stableId: AnyHashable, retained: AyuRetainedText, presentation: TelegramPresentationTheme, timeDifference: TimeInterval) {
++        outgoing = retained.outgoing
++        bubbleColor = presentation.chat.bubbleBackgroundColor(!retained.outgoing, true)
++        deletedLabel = "Deleted " + retained.text
++        measuredWidth = size.width
++        let textColor = presentation.chat.textColor(!retained.outgoing, true)
++        let attributed = NSMutableAttributedString(string: retained.text, attributes: [.font: NSFont.systemFont(ofSize: presentation.fontSize), .foregroundColor: textColor])
++        let dateColor = presentation.chat.grayText(!retained.outgoing, true)
++        metadataColor = dateColor
++        let time = DateSelectorUtil.chatDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(retained.timestamp) - timeDifference))
++        attributed.append(NSAttributedString(string: "  ", attributes: [.font: NSFont.systemFont(ofSize: 10)]))
++        iconIndex = attributed.length
++        attributed.append(NSAttributedString(string: "\u{2003}", attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.clear]))
++        attributed.append(NSAttributedString(string: "\u{00a0}" + time.replacingOccurrences(of: " ", with: "\u{00a0}"), attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: dateColor]))
++        super.init(size, stableId: stableId, text: attributed, isTextSelectable: true, detectLinks: false, contextMenu: { [] })
++    }
++
++    override var inset: NSEdgeInsets {
++        return NSEdgeInsets(left: 26, right: max(26, measuredWidth * 0.28), top: 9, bottom: 9)
++    }
++
++    override func makeSize(_ width: CGFloat, oldWidth: CGFloat) -> Bool {
++        measuredWidth = width
++        return super.makeSize(width, oldWidth: oldWidth)
++    }
++
++    override func viewClass() -> AnyClass { return AyuRetainedRowView.self }
++    override var accessibilityLabel: String? { return deletedLabel }
++}
++
++private final class AyuRetainedRowView: GeneralTextRowView {
++    private let bubble = NSView(frame: .zero)
++    private let deletedIcon = NSImageView(frame: .zero)
++
++    required init(frame: NSRect) {
++        super.init(frame: frame)
++        bubble.wantsLayer = true
++        bubble.layer?.cornerRadius = 12
++        bubble.setAccessibilityElement(false)
++        addSubview(bubble, positioned: .below, relativeTo: textView)
++        deletedIcon.image = NSImage(systemSymbolName: "trash.fill", accessibilityDescription: nil)
++        deletedIcon.setAccessibilityElement(false)
++        addSubview(deletedIcon)
++    }
++
++    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
++    override var backdorColor: NSColor { return .clear }
++
++    override func set(item: TableRowItem, animated: Bool) {
++        super.set(item: item, animated: animated)
++        if let item = item as? AyuRetainedRowItem {
++            bubble.layer?.backgroundColor = item.bubbleColor.cgColor
++            deletedIcon.contentTintColor = item.metadataColor
++        }
++    }
++
++    override func layout() {
++        super.layout()
++        guard let item = item as? AyuRetainedRowItem else { return }
++        let x = item.outgoing ? max(26, frame.width - 26 - textView.frame.width) : 26
++        textView.setFrameOrigin(NSPoint(x: x, y: textView.frame.minY))
++        bubble.frame = textView.frame.insetBy(dx: -10, dy: -5)
++        if let line = textView.textView.textLayout?.lines.first(where: { NSLocationInRange(item.iconIndex, $0.range) }) {
++            let offset = CTLineGetOffsetForStringIndex(line.line, item.iconIndex, nil)
++            deletedIcon.frame = NSRect(x: textView.frame.minX + line.frame.minX + offset, y: textView.frame.minY + line.frame.minY - line.frame.height + max(0, (line.frame.height - 9) / 2) + 2, width: 9, height: 9)
++            deletedIcon.isHidden = false
++        } else {
++            deletedIcon.isHidden = true
++        }
++    }
++}
++
+ public final class ChatWrappedEntry : Comparable, Identifiable {
+     public let appearance: AppearanceWrapperEntry<ChatHistoryEntry>
+     public let tag: HistoryViewInputTag?
+-    public init(appearance: AppearanceWrapperEntry<ChatHistoryEntry>, tag: HistoryViewInputTag?) {
++    let retainedText: AyuRetainedText?
++    let localChatEmoji: [AyuChatEmoji]
++    public init(appearance: AppearanceWrapperEntry<ChatHistoryEntry>, tag: HistoryViewInputTag?, localChatEmoji: [AyuChatEmoji] = []) {
+         self.appearance = appearance
+         self.tag = tag
++        self.retainedText = nil
++        self.localChatEmoji = localChatEmoji
++    }
++    init(appearance: AppearanceWrapperEntry<ChatHistoryEntry>, retainedText: AyuRetainedText) {
++        self.appearance = appearance
++        self.tag = nil
++        self.retainedText = retainedText
++        self.localChatEmoji = []
+     }
+     public var stableId: ChatHistoryEntryId {
++        if let retainedText { return .maybeId("ayu.deleted.\(retainedText.chatId).\(retainedText.messageId)") }
+         return appearance.entry.stableId
+     }
+     
+@@ -139,7 +231,7 @@ public final class ChatWrappedEntry : Comparable, Identifiable {
+ }
+ 
+ public func ==(lhs:ChatWrappedEntry, rhs: ChatWrappedEntry) -> Bool {
+-    return lhs.appearance == rhs.appearance && lhs.tag == rhs.tag
++    return lhs.appearance == rhs.appearance && lhs.tag == rhs.tag && lhs.retainedText == rhs.retainedText && lhs.localChatEmoji == rhs.localChatEmoji
+ }
+ public func <(lhs:ChatWrappedEntry, rhs: ChatWrappedEntry) -> Bool {
+     return lhs.appearance.entry < rhs.appearance.entry
+@@ -1984,7 +2076,7 @@ fileprivate func prepareEntries(from fromView:ChatHistoryView?, to toView:ChatHi
+                                 }
+                             }
+                         } else {
+-                            scrollToItem = position.swap(to: entry.appearance.entry.stableId)
++                            scrollToItem = position.swap(to: entry.stableId)
+                         }
+                         break
+                     }
+@@ -2031,6 +2123,12 @@ fileprivate func prepareEntries(from fromView:ChatHistoryView?, to toView:ChatHi
+             }
+             #endif
+             let presentation: TelegramPresentationTheme = entry.entry.additionalData.chatTheme ?? theme
++            if let retained = entry.retainedText {
++                let item = AyuRetainedRowItem(initialSize, stableId: entry.stableId, retained: retained, presentation: presentation, timeDifference: timeDifference)
++                _ = item.makeSize(initialSize.width, oldWidth: 0)
++                item.premeasuredWidth = initialSize.width
++                return item
++            }
+             
+             let item:TableRowItem = ChatRowItem.item(initialSize, from: entry.appearance.entry, interaction: interaction, theme: presentation)
+             _ = item.makeSize(initialSize.width)
+@@ -3482,6 +3580,7 @@ open class ChatController<Context: AccountContextProtocol>: TelegramGenericViewC
+         genericView.tableView.emptyChecker = { [weak self] items in
+             
+             let hasContent = items.contains(where: { item in
++                if item is AyuRetainedRowItem { return true }
+                 if let item = item as? ChatRowItem, let message = item.message {
+                     if let action = message.extendedMedia as? TelegramMediaAction {
+                         switch action.action {
+@@ -4246,6 +4345,10 @@ open class ChatController<Context: AccountContextProtocol>: TelegramGenericViewC
+             return (lhsView.cachedData == nil) == (rhsView.cachedData == nil)
+         })
+ 
++        let ayuRetainedHistory: Signal<[AyuRetainedText], NoError> = self.chatLocationValue |> distinctUntilChanged |> mapToSignal { location in
++            if case let .peer(peer) = location { return context.ayuRetainedHistory(chat: peer) }
++            return .single([])
++        }
+         let previousHistoryViewUpdateId = Atomic<Int?>(value: nil)
+         let historyPeer = self.historyPeer
+         let historyViewTransition = combineLatest(queue: queue,
+@@ -4263,9 +4366,11 @@ open class ChatController<Context: AccountContextProtocol>: TelegramGenericViewC
+                                                   reactions,
+                                                   historyUiState,
+                                                   historyPeerView,
+-                                                  recommendedChannels
+-    ) |> mapToQueue { update, appearance, maxReadIndex, searchState, animatedEmojiStickers, messageEffects, savedMessageTags, customChannelDiscussionReadState, customThreadOutgoingReadState, updatingMedia, adMessages, reactions, uiState, peerView, recommendedChannels -> Signal<(TableUpdateTransition, MessageHistoryView?, ChatHistoryCombinedInitialData, Bool, ChatHistoryView), NoError> in
++                                                  combineLatest(recommendedChannels, ayuRetainedHistory, context.ayuLocalCosmetics())
++    ) |> mapToQueue { update, appearance, maxReadIndex, searchState, animatedEmojiStickers, messageEffects, savedMessageTags, customChannelDiscussionReadState, customThreadOutgoingReadState, updatingMedia, adMessages, reactions, uiState, peerView, recommendationsAndRetained -> Signal<(TableUpdateTransition, MessageHistoryView?, ChatHistoryCombinedInitialData, Bool, ChatHistoryView), NoError> in
+                                     
++            let (recommendedChannels, retainedHistory, localCosmetics) = recommendationsAndRetained
++            let localChatEmoji = localCosmetics.enabled ? localCosmetics.chatEmoji : []
+             let pollAnswersLoading = uiState.pollAnswers
+             let threadLoading = uiState.threadLoading
+             let chatLocation = update.3
+@@ -4394,7 +4499,20 @@ open class ChatController<Context: AccountContextProtocol>: TelegramGenericViewC
+                         includeJoin = false
+                     }
+                     
+-                    let entries = messageEntries(msgEntries, location: chatLocation, maxReadIndex: view.isAnchorOnlyWhileLoading ? nil : maxReadIndex, dayGrouping: customChatContents == nil, renderType: chatTheme.bubbled ? .bubble : .list, includeBottom: true, timeDifference: timeDifference, ranks: ranks, pollAnswersLoading: pollAnswersLoading, threadLoading: threadLoading, groupingPhotos: true, autoplayMedia: initialData.autoplayMedia, searchState: searchState, animatedEmojiStickers: bigEmojiEnabled ? animatedEmojiStickers : [:], topFixedMessages: topMessages, customChannelDiscussionReadState: customChannelDiscussionReadState, customThreadOutgoingReadState: customThreadOutgoingReadState, addRepliesHeader: peerId == repliesPeerId && view.earlierId == nil, addWelcomeMessagesHeader: customChatContents?.kind == .welcomeMessages, updatingMedia: updatingMedia, adMessage: ads.fixed, dynamicAdMessages: ads.opportunistic, chatTheme: chatTheme, reactions: reactions, transribeState: uiState.transribe, topicCreatorId: uiState.topicCreatorId, mediaRevealed: uiState.mediaRevealed, translate: uiState.translate, storyState: uiState.storyState, peerStoryStats: view.peerStoryStats, cachedData: peerView?.cachedData, peer: peer, holeLater: view.holeLater, holeEarlier: view.holeEarlier, recommendedChannels: recommendedChannels, includeJoin: includeJoin, earlierId: view.earlierId, laterId: view.laterId, automaticDownload: initialData.autodownloadSettings, savedMessageTags: savedMessageTags, contentSettings: context.contentSettings, codeSyntaxData: uiState.codeSyntaxes, messageEffects: messageEffects, factCheckRevealed: uiState.factCheck, solutionRevealed: uiState.solutionRevealed, quoteRevealed: uiState.quoteRevealed, detailsExpanded: uiState.detailsExpanded, peerStatus: uiState.peerStatus, commonGroups: uiState.commonGroups, monoforumState: uiState.monoforumState, accountPeerId: context.peerId, contentConfig: context.contentConfig, walletFiatRate: uiState.walletFiatRate).map { ChatWrappedEntry(appearance: AppearanceWrapperEntry(entry: $0, appearance: appearance), tag: view.tag) }
++                    var entries = messageEntries(msgEntries, location: chatLocation, maxReadIndex: view.isAnchorOnlyWhileLoading ? nil : maxReadIndex, dayGrouping: customChatContents == nil, renderType: chatTheme.bubbled ? .bubble : .list, includeBottom: true, timeDifference: timeDifference, ranks: ranks, pollAnswersLoading: pollAnswersLoading, threadLoading: threadLoading, groupingPhotos: true, autoplayMedia: initialData.autoplayMedia, searchState: searchState, animatedEmojiStickers: bigEmojiEnabled ? animatedEmojiStickers : [:], localEmojiTriggers: Set(localChatEmoji.map { $0.trigger }), topFixedMessages: topMessages, customChannelDiscussionReadState: customChannelDiscussionReadState, customThreadOutgoingReadState: customThreadOutgoingReadState, addRepliesHeader: peerId == repliesPeerId && view.earlierId == nil, addWelcomeMessagesHeader: customChatContents?.kind == .welcomeMessages, updatingMedia: updatingMedia, adMessage: ads.fixed, dynamicAdMessages: ads.opportunistic, chatTheme: chatTheme, reactions: reactions, transribeState: uiState.transribe, topicCreatorId: uiState.topicCreatorId, mediaRevealed: uiState.mediaRevealed, translate: uiState.translate, storyState: uiState.storyState, peerStoryStats: view.peerStoryStats, cachedData: peerView?.cachedData, peer: peer, holeLater: view.holeLater, holeEarlier: view.holeEarlier, recommendedChannels: recommendedChannels, includeJoin: includeJoin, earlierId: view.earlierId, laterId: view.laterId, automaticDownload: initialData.autodownloadSettings, savedMessageTags: savedMessageTags, contentSettings: context.contentSettings, codeSyntaxData: uiState.codeSyntaxes, messageEffects: messageEffects, factCheckRevealed: uiState.factCheck, solutionRevealed: uiState.solutionRevealed, quoteRevealed: uiState.quoteRevealed, detailsExpanded: uiState.detailsExpanded, peerStatus: uiState.peerStatus, commonGroups: uiState.commonGroups, monoforumState: uiState.monoforumState, accountPeerId: context.peerId, contentConfig: context.contentConfig, walletFiatRate: uiState.walletFiatRate).map { ChatWrappedEntry(appearance: AppearanceWrapperEntry(entry: $0, appearance: appearance), tag: view.tag, localChatEmoji: localChatEmoji) }
++                    if case .history = mode, case .peer = chatLocation, view.tag == nil, customChatContents == nil {
++                        let cloudMessages = msgEntries.map { $0.message }.filter { $0.id.peerId == chatLocation.peerId && $0.id.namespace == Namespaces.Message.Cloud }
++                        let boundaries = cloudMessages.map { AyuMessageBoundary(timestamp: Int64($0.timestamp), messageId: $0.id.id) }
++                        let window = AyuHistoryWindow(earliest: boundaries.min(), latest: boundaries.max(), hasEarlierGap: view.holeEarlier || view.earlierId != nil, hasLaterGap: view.holeLater || view.laterId != nil)
++                        let liveIds = Set(cloudMessages.map { $0.id.id })
++                        for retained in ayuProjectDeletedText(retainedHistory, chatId: chatLocation.peerId.toInt64(), liveIds: liveIds, window: window) {
++                            let adjustedTimestamp = Int32(clamping: retained.timestamp - Int64(timeDifference))
++                            let index = MessageIndex(id: MessageId(peerId: chatLocation.peerId, namespace: Namespaces.Message.Cloud, id: retained.messageId), timestamp: adjustedTimestamp)
++                            let placeholder = ChatHistoryEntry.empty(index, chatTheme)
++                            entries.append(ChatWrappedEntry(appearance: AppearanceWrapperEntry(entry: placeholder, appearance: appearance), retainedText: retained))
++                        }
++                        entries.sort()
++                    }
+                     proccesedView = ChatHistoryView(originalView: view, filteredEntries: entries, theme: chatTheme)
+                 }
+             } else {
+@@ -4409,6 +4527,7 @@ open class ChatController<Context: AccountContextProtocol>: TelegramGenericViewC
+         
+         
+         let appliedTransition = historyViewTransition |> map { [weak self] transition, view, initialData, isLoading, proccesedView in
++            if let self, let view, self.context.window.isKeyWindow, self.genericView.window === self.context.window, self.navigationController?.controller === self { self.context.ayuObserveMessages(view.entries.map { $0.message }, chat: self.chatLocation.peerId) }
+             self?.applyTransition(transition, initialData: initialData, isLoading: isLoading, processedView: proccesedView)
+         }
+         
+@@ -4422,7 +4541,7 @@ open class ChatController<Context: AccountContextProtocol>: TelegramGenericViewC
+         } else {
+             canRead = .single(true)
+         }
+-        canRead = combineLatest(canRead, self.isKeyWindow.get()) |> map { $0 && $1 }
++        canRead = combineLatest(canRead, self.isKeyWindow.get(), context.ayuStreamerMode()) |> map { canRead, key, streamer in canRead && key && !streamer }
+         if self.mode == .preview {
+             canRead = .single(false)
+         }
+@@ -10376,7 +10495,7 @@ open class ChatController<Context: AccountContextProtocol>: TelegramGenericViewC
+     private func canInteractiveRead() -> Bool {
+         guard self.interactiveReadEnabled, !self.genericView.tableView.clipView.isAnimateScrolling else { return false }
+         let scroll = genericView.scroll
+-        let hasEntries = self.previousView.with { $0?.filteredEntries.count ?? 0 } > 1
++        let hasEntries = self.previousView.with { $0?.filteredEntries.filter { $0.retainedText == nil }.count ?? 0 } > 1
+         let checkScroll = self.historyState.isDownOfHistory && scroll.rect.minY == genericView.tableView.frame.height && hasEntries
+         let screenIsLocked = ChatUIHooks.shared.appIsLockedValue() ?? false
+         if checkScroll, !screenIsLocked, context.window.isKeyWindow {
+--- a/Telegram-Mac/app/AppDelegate.swift
++++ b/Telegram-Mac/app/AppDelegate.swift
+@@ -279,6 +279,7 @@
+     private var rustEngineCrash: CrashedRun?
+ 
+     func applicationWillFinishLaunching(_ notification: Notification) {
++        AyuAccountRuntime.installGhostProvider()
+         TGUIKitAccessibility.isEnabled = FastSettings.accessibilityTreeEffective
+         Analytics.shared.isEnabled = false
+         analyticsLaunchStart = Analytics.shared.now
+@@ -1690,14 +1691,19 @@
+         }
+     }
+     
++    private let ayuTerminationGate = AyuTerminationGate()
+     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+-        
++        guard ayuTerminationGate.begin() else { return .terminateLater }
+         if let context = self.contextValue?.context {
+             let navigation = context.bindings.rootNavigation()
+             (navigation.controller as? ChatController)?.chatInteraction.saveState(sync: true)
+         }
+         
+-        return .terminateNow
++        Task {
++            await AyuAccountRuntime.flushAll()
++            await MainActor.run { sender.reply(toApplicationShouldTerminate: true) }
++        }
++        return .terminateLater
+     }
+     
+     

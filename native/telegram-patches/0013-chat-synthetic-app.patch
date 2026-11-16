@@ -1,0 +1,17 @@
+--- a/packages/ChatUI/Sources/ChatUI/ChatSyntheticContents.swift
++++ b/packages/ChatUI/Sources/ChatUI/ChatSyntheticContents.swift
+@@ -69,8 +69,12 @@
+             if index % 3 == 0 {
+                 let values = ChatSyntheticContents.reactionValues
+                 let kinds = 1 + index % 4
+-                var reactions = (0 ..< kinds).map { offset in
+-                    MessageReaction(value: .builtin(values[(index + offset) % values.count]), count: Int32(1 + (index * (offset + 3)) % 17), chosenOrder: nil)
++                var reactions: [MessageReaction] = []
++                for offset in 0 ..< kinds {
++                    let valueIndex: Int = (index + offset) % values.count
++                    let value: MessageReaction.Reaction = .builtin(values[valueIndex])
++                    let count: Int32 = Int32(1 + (index * (offset + 3)) % 17)
++                    reactions.append(MessageReaction(value: value, count: count, chosenOrder: nil))
+                 }
+                 if index % 11 == 0 {
+                     reactions.insert(MessageReaction(value: .stars, count: Int32(5 + index % 40), chosenOrder: nil), at: 0)

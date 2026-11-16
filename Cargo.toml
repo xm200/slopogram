@@ -1,0 +1,36 @@
+[workspace]
+members = ["crates/core", "crates/telegram", "crates/desktop", "crates/macos", "crates/client", "crates/ffi", "crates/ayu", "crates/ayu-ffi"]
+exclude = [
+    "native/telegram-macos/submodules/tlottie",
+    "native/telegram-macos/submodules/telegram-ios/third-party/wallet-engine/wallet-engine/xtask",
+    "native/telegram-macos/submodules/telegram-ios/third-party/wallet-engine/wallet-engine/bindgen/apple",
+]
+default-members = ["crates/desktop"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[workspace.dependencies]
+slopogram-core = { path = "crates/core" }
+slopogram-telegram = { path = "crates/telegram" }
+anyhow = "1"
+directories = "6"
+dotenvy = "0.15"
+fs2 = "0.4"
+grammers-client = { version = "=0.12.0", features = ["proxy"] }
+grammers-session = "=0.12.0"
+iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "tokio", "x11", "wayland"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+

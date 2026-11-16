@@ -1,0 +1,39 @@
+diff --git a/packages/ChatUI/Sources/ChatUI/ChatReactionsView.swift b/packages/ChatUI/Sources/ChatUI/ChatReactionsView.swift
+index 816fffdd..5085860d 100644
+--- a/packages/ChatUI/Sources/ChatUI/ChatReactionsView.swift
++++ b/packages/ChatUI/Sources/ChatUI/ChatReactionsView.swift
+@@ -453,7 +453,7 @@ public final class ChatReactionsLayout {
+             case let .stars(file, effect):
+                 source = .stars(file, effect)
+             }
+-            weak let weakSelf = self
++            weak var weakSelf = self
+             let message = self.message
+             let canDeleteReactions = canDeleteReactionsInChat(message: self.message)
+             let avatarDisposables = DisposableSet()
+diff --git a/packages/InlineStickerLayer/Sources/InlineStickerLayer/InlineStickerItemLayer.swift b/packages/InlineStickerLayer/Sources/InlineStickerLayer/InlineStickerItemLayer.swift
+index 869bb962..0caf9ec5 100644
+--- a/packages/InlineStickerLayer/Sources/InlineStickerLayer/InlineStickerItemLayer.swift
++++ b/packages/InlineStickerLayer/Sources/InlineStickerLayer/InlineStickerItemLayer.swift
+@@ -662,7 +662,7 @@ public final class InlineStickerItemLayer : SimpleLayer {
+             self.sourceAnimation = animation
+         }
+         if let animation = animation, let isPlayable = self.isPlayable, isPlayable, !stopped {
+-            weak let layer: InlineStickerItemLayer? = self
++            weak var layer: InlineStickerItemLayer? = self
+             let key: MultiTargetContextCache.Key = .init(key: animation.key, unique: unique)
+ 
+             delayDisposable.set(delaySignal(MultiTargetContextCache.exists(key) || force || noDelayBeforeplay ? 0 : 0.1).start(completed: { [weak self] in
+diff --git a/packages/WebAppUI/Sources/WebAppUI/WebpageModalController.swift b/packages/WebAppUI/Sources/WebAppUI/WebpageModalController.swift
+index 821ad0fc..598a64c1 100644
+--- a/packages/WebAppUI/Sources/WebAppUI/WebpageModalController.swift
++++ b/packages/WebAppUI/Sources/WebAppUI/WebpageModalController.swift
+@@ -2119,7 +2119,7 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate,
+                 kSecAttrAccount: "bot_id_\(botPeer.id.toInt64())"
+             ];
+             
+-            weak let controller = self
++            weak var controller = self
+             
+             
+             DispatchQueue.global().async {

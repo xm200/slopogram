@@ -1,0 +1,223 @@
+diff --git a/core-xprojects/mtproto-engine/mtproto-engine/build.sh b/core-xprojects/mtproto-engine/mtproto-engine/build.sh
+index a99f17a4..bdcfcf4c 100755
+--- a/core-xprojects/mtproto-engine/mtproto-engine/build.sh
++++ b/core-xprojects/mtproto-engine/mtproto-engine/build.sh
+@@ -47,7 +47,7 @@ mkdir -p "$BUILD_DIR"
+ 
+ cd "$SOURCE_DIR"
+ 
+-for RUST_TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
++for RUST_TARGET in aarch64-apple-darwin; do
+     if [ -x "$RUSTUP_BIN" ]; then
+         "$RUSTUP_BIN" target add "$RUST_TARGET" >/dev/null 2>&1 || true
+     fi
+@@ -58,10 +58,7 @@ for RUST_TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
+         --target "$RUST_TARGET"
+ done
+ 
+-lipo -create \
+-    "$BUILD_DIR/lib/aarch64-apple-darwin/release/libmtproto_engine_ffi.a" \
+-    "$BUILD_DIR/lib/x86_64-apple-darwin/release/libmtproto_engine_ffi.a" \
+-    -output "$BUILD_DIR/libmtproto_engine_ffi.a"
++cp "$BUILD_DIR/lib/aarch64-apple-darwin/release/libmtproto_engine_ffi.a" "$BUILD_DIR/libmtproto_engine_ffi.a"
+ 
+ HEADERS_DIR="$BUILD_DIR/headers"
+ rm -rf "$HEADERS_DIR"
+diff --git a/core-xprojects/tde2e/tde2e/build.sh b/core-xprojects/tde2e/tde2e/build.sh
+index 3fae22f8..67f492fd 100755
+--- a/core-xprojects/tde2e/tde2e/build.sh
++++ b/core-xprojects/tde2e/tde2e/build.sh
+@@ -24,7 +24,7 @@ options="$options -DCMAKE_BUILD_TYPE=Release"
+ GEN_DIR="$BUILD_DIR/native-gen"
+ mkdir -p "$GEN_DIR"
+ pushd "$GEN_DIR"
+-cmake -DTD_GENERATE_SOURCE_FILES=ON "$SOURCE_DIR"
++cmake -DCMAKE_OSX_ARCHITECTURES=arm64 -DTD_GENERATE_SOURCE_FILES=ON "$SOURCE_DIR"
+ cmake --build . -- -j$(sysctl -n hw.ncpu)
+ popd
+ 
+@@ -41,35 +41,7 @@ cmake "$SOURCE_DIR" \
+ cmake --build . --target tde2e -j$(sysctl -n hw.ncpu)
+ popd
+ 
+-# Step 3: Build for x86_64
+-echo "Building for x86_64..."
+-X86_64_DIR="$BUILD_DIR/x86_64"
+-mkdir -p "$X86_64_DIR"
+-pushd "$X86_64_DIR"
+-
+-cmake "$SOURCE_DIR" \
+-    -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+-    $options
+-
+-cmake --build . --target tde2e -j$(sysctl -n hw.ncpu)
+-popd
+-
+-# Step 4: Create universal binary
+-echo "Creating universal binary..."
+-UNIVERSAL_DIR="$BUILD_DIR/tde2e"
+-mkdir -p "$UNIVERSAL_DIR/lib"
+-
+-lipo -create \
+-    "$ARM64_DIR/tde2e/libtde2e.a" \
+-    "$X86_64_DIR/tde2e/libtde2e.a" \
+-    -output "$UNIVERSAL_DIR/lib/libtde2e.a"
+-
+-echo "Universal binary created at $UNIVERSAL_DIR/lib/libtde2e.a"
+-
+-
+-lipo -create \
+-    "$ARM64_DIR/tdutils/libtdutils.a" \
+-    "$X86_64_DIR/tdutils/libtdutils.a" \
+-    -output "$UNIVERSAL_DIR/lib/libtdutils.a"
+-
+-echo "Universal binary created at $UNIVERSAL_DIR/lib/libtdutils.a"
++OUTPUT_DIR="$BUILD_DIR/tde2e/lib"
++mkdir -p "$OUTPUT_DIR"
++cp "$ARM64_DIR/tde2e/libtde2e.a" "$OUTPUT_DIR/libtde2e.a"
++cp "$ARM64_DIR/tdutils/libtdutils.a" "$OUTPUT_DIR/libtdutils.a"
+diff --git a/core-xprojects/tlottie/build.sh b/core-xprojects/tlottie/build.sh
+index 37cf9416..8ad997f1 100755
+--- a/core-xprojects/tlottie/build.sh
++++ b/core-xprojects/tlottie/build.sh
+@@ -50,7 +50,7 @@ if [ -x "$RUSTUP_BIN" ]; then
+     INSTALLED_TARGETS="$("$RUSTUP_BIN" target list --installed --toolchain "$TOOLCHAIN")"
+ fi
+ 
+-for RUST_TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
++for RUST_TARGET in aarch64-apple-darwin; do
+     if [ -x "$RUSTUP_BIN" ] && ! printf '%s\n' "$INSTALLED_TARGETS" | grep -qx "$RUST_TARGET"; then
+         "$RUSTUP_BIN" target add --toolchain "$TOOLCHAIN" "$RUST_TARGET" >/dev/null 2>&1
+     fi
+@@ -67,10 +67,7 @@ done
+ 
+ MERGED_LIBRARY="$(mktemp "$BUILD_DIR/libtlottie.XXXXXX")"
+ trap 'rm -f "$MERGED_LIBRARY"' EXIT
+-lipo -create \
+-    "$BUILD_DIR/lib/aarch64-apple-darwin/release/libtlottie.a" \
+-    "$BUILD_DIR/lib/x86_64-apple-darwin/release/libtlottie.a" \
+-    -output "$MERGED_LIBRARY"
++cp "$BUILD_DIR/lib/aarch64-apple-darwin/release/libtlottie.a" "$MERGED_LIBRARY"
+ 
+ if ! cmp -s "$MERGED_LIBRARY" "$BUILD_DIR/libtlottie.a"; then
+     mv "$MERGED_LIBRARY" "$BUILD_DIR/libtlottie.a"
+diff --git a/core-xprojects/wallet-engine/wallet-engine/build.sh b/core-xprojects/wallet-engine/wallet-engine/build.sh
+index 48c1432d..fc0e7126 100755
+--- a/core-xprojects/wallet-engine/wallet-engine/build.sh
++++ b/core-xprojects/wallet-engine/wallet-engine/build.sh
+@@ -49,7 +49,7 @@ mkdir -p "$BUILD_DIR"
+ 
+ cd "$SOURCE_DIR"
+ 
+-for RUST_TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
++for RUST_TARGET in aarch64-apple-darwin; do
+     if [ -x "$RUSTUP_BIN" ]; then
+         "$RUSTUP_BIN" target add "$RUST_TARGET" >/dev/null 2>&1 || true
+     fi
+@@ -60,10 +60,7 @@ for RUST_TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
+         --target "$RUST_TARGET"
+ done
+ 
+-lipo -create \
+-    "$BUILD_DIR/lib/aarch64-apple-darwin/release/libwallet_engine.a" \
+-    "$BUILD_DIR/lib/x86_64-apple-darwin/release/libwallet_engine.a" \
+-    -output "$BUILD_DIR/libwallet_engine.a"
++cp "$BUILD_DIR/lib/aarch64-apple-darwin/release/libwallet_engine.a" "$BUILD_DIR/libwallet_engine.a"
+ 
+ CARGO="$CARGO_BIN" CARGO_TARGET_DIR="$BUILD_DIR/xtask" "$CARGO_BIN" run \
+     --manifest-path xtask/Cargo.toml \
+diff --git a/core-xprojects/webrtc/webrtc.xcodeproj/project.pbxproj b/core-xprojects/webrtc/webrtc.xcodeproj/project.pbxproj
+index f7e86543..5f092e04 100644
+--- a/core-xprojects/webrtc/webrtc.xcodeproj/project.pbxproj
++++ b/core-xprojects/webrtc/webrtc.xcodeproj/project.pbxproj
+@@ -160,7 +160,7 @@
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 			shellPath = /bin/sh;
+-			shellScript = "#!/bin/sh\n\n# Check if the build directory exists; if not, execute the build script\nif [ ! -d \"$PROJECT_DIR/build\" ]; then\n    sh $PROJECT_DIR/webrtc/build.sh \\\n    $PROJECT_DIR/../../submodules/tg_owt/ \\\n    $PROJECT_DIR/../openssl/build/openssl/include \\\n    $PROJECT_DIR/../Mozjpeg/build \\\n    $PROJECT_DIR/../libopus/build/libopus/include/opus \\\n    $PROJECT_DIR/../ffmpeg/build/ffmpeg/include \\\n    $PROJECT_DIR/../libvpx/build/libvpx/include \\\n    $PROJECT_DIR/../OpenH264/build/output/include/include\nfi\n";
++			shellScript = "#!/bin/sh\n\n# Check if the build directory exists; if not, execute the build script\nif [ ! -d \"$PROJECT_DIR/build\" ] || [ \"${SLOPOGRAM_RESUME_WEBRTC:-0}\" = 1 ]; then\n    sh $PROJECT_DIR/webrtc/build.sh \\\n    $PROJECT_DIR/../../submodules/tg_owt/ \\\n    $PROJECT_DIR/../openssl/build/openssl/include \\\n    $PROJECT_DIR/../Mozjpeg/build \\\n    $PROJECT_DIR/../libopus/build/libopus/include/opus \\\n    $PROJECT_DIR/../ffmpeg/build/ffmpeg/include \\\n    $PROJECT_DIR/../libvpx/build/libvpx/include \\\n    $PROJECT_DIR/../OpenH264/build/output/include/include\nfi\n";
+ 		};
+ /* End PBXShellScriptBuildPhase section */
+ 
+diff --git a/core-xprojects/webrtc/webrtc/build.sh b/core-xprojects/webrtc/webrtc/build.sh
+index 0dad8383..be3758f7 100755
+--- a/core-xprojects/webrtc/webrtc/build.sh
++++ b/core-xprojects/webrtc/webrtc/build.sh
+@@ -14,11 +14,9 @@ OPENH264_DIR="$7"
+ 
+ BUILD_DIR="${PROJECT_DIR}/build/"
+ 
+-rm -rf $BUILD_DIR || true
+-mkdir -p $BUILD_DIR || true
+-
+-
+-cp -R $SOURCE_DIR $BUILD_DIR
++if [ "${SLOPOGRAM_RESUME_WEBRTC:-0}" != 1 ]; then rm -rf "$BUILD_DIR"; fi
++mkdir -p "$BUILD_DIR"
++if [ ! -d "$BUILD_DIR/src" ]; then cp -R "$SOURCE_DIR" "$BUILD_DIR"; fi
+ 
+ 
+ 
+diff --git a/scripts/configure_frameworks.sh b/scripts/configure_frameworks.sh
+index 067d0ac2..582c67d3 100644
+--- a/scripts/configure_frameworks.sh
++++ b/scripts/configure_frameworks.sh
+@@ -48,12 +48,15 @@ do
+         if [ -f "$STAMP_FILE" ]; then
+             diff "$STAMP_FILE" "$STAMP_CACHE/$LIB" | sed 's/^/framework-stamp:   /' || true
+         fi
+-        rm -rf "$BUILD_DIR"
++        if [ "$LIB" != webrtc ] || [ "${SLOPOGRAM_RESUME_WEBRTC:-0}" != 1 ]; then
++            rm -rf "$BUILD_DIR"
++        fi
+         framework_reset_outputs "$ROOT_DIR" "$LIB"
+     else
+         echo "framework-stamp: $LIB outputs are missing or inconsistent, repairing"
+         case "$LIB" in
+             wallet-engine|mtproto-engine) framework_reset_outputs "$ROOT_DIR" "$LIB" ;;
++            webrtc) if [ "${SLOPOGRAM_RESUME_WEBRTC:-0}" != 1 ]; then rm -rf "$BUILD_DIR"; fi ;;
+             *) rm -rf "$BUILD_DIR" ;;
+         esac
+     fi
+@@ -63,7 +66,7 @@ do
+     sh "$ROOT_DIR/scripts/time-step.sh" "framework-$LIB" \
+         xcrun xcodebuild build \
+         -project "$PROJECT_DIR/$FWNAME.xcodeproj" \
+-        -configuration Release BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
++        -configuration Release BUILD_LIBRARY_FOR_DISTRIBUTION=YES ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+         -scheme "$FWNAME" \
+         -derivedDataPath "$STAMP_CACHE/DerivedData-$LIB" \
+         -destination 'generic/platform=macOS'
+diff --git a/scripts/framework-inputs.sh b/scripts/framework-inputs.sh
+index f5471fc1..21708c9f 100644
+--- a/scripts/framework-inputs.sh
++++ b/scripts/framework-inputs.sh
+@@ -141,14 +141,14 @@ framework_required_outputs() {
+         wallet-engine)
+             local XCFRAMEWORK="$1/packages/WalletEngine/wallet_engineFFI.xcframework"
+             printf '%s\n' "$BUILD_DIR/libwallet_engine.a" "$BUILD_DIR/WalletEngineFFI.swift" \
+-                "$XCFRAMEWORK/Info.plist" "$XCFRAMEWORK/macos-arm64_x86_64/libwallet_engine.a" \
+-                "$XCFRAMEWORK/macos-arm64_x86_64/Headers/"{wallet_engineFFI.h,module.modulemap}
++                "$XCFRAMEWORK/Info.plist" "$XCFRAMEWORK/macos-arm64/libwallet_engine.a" \
++                "$XCFRAMEWORK/macos-arm64/Headers/"{wallet_engineFFI.h,module.modulemap}
+             ;;
+         mtproto-engine)
+             local XCFRAMEWORK="$1/submodules/telegram-ios/submodules/MTProtoRustEngine/MTProtoEngineFFI.xcframework"
+             printf '%s\n' "$BUILD_DIR/libmtproto_engine_ffi.a" "$XCFRAMEWORK/Info.plist" \
+-                "$XCFRAMEWORK/macos-arm64_x86_64/libmtproto_engine_ffi.a" \
+-                "$XCFRAMEWORK/macos-arm64_x86_64/Headers/MTProtoEngineFFI/"{mtproto_engine.h,module.modulemap}
++                "$XCFRAMEWORK/macos-arm64/libmtproto_engine_ffi.a" \
++                "$XCFRAMEWORK/macos-arm64/Headers/MTProtoEngineFFI/"{mtproto_engine.h,module.modulemap}
+             ;;
+         *) return 1 ;;
+     esac
+@@ -161,6 +161,9 @@ framework_outputs_present() {
+     [ -n "$OUTPUTS" ] || return 1
+     while IFS= read -r OUTPUT; do
+         [ -s "$OUTPUT" ] || return 1
++        case "$OUTPUT" in
++            *.a) xcrun lipo "$OUTPUT" -verify_arch arm64 >/dev/null 2>&1 || return 1 ;;
++        esac
+     done <<< "$OUTPUTS"
+ }
+ 

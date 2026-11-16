@@ -1,0 +1,14 @@
+diff --git a/Telegram-Mac/app/AppDelegate.swift b/Telegram-Mac/app/AppDelegate.swift
+index 088cf02..5cc00b0 100644
+--- a/Telegram-Mac/app/AppDelegate.swift
++++ b/Telegram-Mac/app/AppDelegate.swift
+@@ -400,7 +400,8 @@ class AppDelegate: NSResponder, NSApplicationDelegate, NSUserNotificationCenterD
+         
+         self.containerUrl = containerUrl.path
+ 
+-        try! PasscodeEnvironment.shared.configure(PasscodeConfiguration(appGroupIdentifier: ApiEnvironment.group, processRole: .mainApp, biometricKeychainService: "one.slopogram.native.wallet.biometric", keychainScope: "slopogram-native"), privateAccessGroup: { ApiEnvironment.group })
++        guard let keychainScope = SlopogramExternalConfiguration.keychainScope, let biometricService = SlopogramExternalConfiguration.biometricKeychainService else { return }
++        try! PasscodeEnvironment.shared.configure(PasscodeConfiguration(appGroupIdentifier: ApiEnvironment.group, processRole: .mainApp, biometricKeychainService: biometricService, keychainScope: keychainScope), privateAccessGroup: { ApiEnvironment.group })
+         
+         TempBox.initializeShared(basePath: self.containerUrl, processType: "app", launchSpecificId: arc4random64())
+         

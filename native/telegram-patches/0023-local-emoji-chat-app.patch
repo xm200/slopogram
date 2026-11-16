@@ -1,0 +1,75 @@
+--- a/packages/ChatUI/Sources/ChatUI/ChatMessageItem.swift
++++ b/packages/ChatUI/Sources/ChatUI/ChatMessageItem.swift
+@@ -24,6 +24,19 @@
+ import TelegramUtils
+ import InlineStickerLayer
+ 
++
++// Apply only to the presentation copy: the stored message and its sent entities remain untouched.
++func ayuApplyLocalEmoji(_ text: NSMutableAttributedString, isOwnMessage: Bool, cosmetics: AyuLocalCosmetics) {
++    guard isOwnMessage, cosmetics.enabled, !cosmetics.chatEmoji.isEmpty else { return }
++    let value = text.string
++    value.enumerateSubstrings(in: value.startIndex..<value.endIndex, options: .byComposedCharacterSequences) { part, range, _, _ in
++        guard let part, let mapping = cosmetics.chatEmoji.first(where: { $0.trigger == part }), mapping.fileId > 0 else { return }
++        let target = NSRange(range, in: value)
++        guard target.length > 0, text.attribute(TextInputAttributes.embedded, at: target.location, effectiveRange: nil) == nil,
++              text.attribute(TextInputAttributes.customEmoji, at: target.location, effectiveRange: nil) == nil else { return }
++        text.addAttribute(TextInputAttributes.embedded, value: InlineStickerItem(source: .attribute(.init(fileId: mapping.fileId, file: nil, emoji: part))), range: target)
++    }
++}
+ 
+ private func openCalendarWithEvent(date: Date, title: String) {
+     let formatter = ISO8601DateFormatter()
+@@ -356,6 +369,7 @@
+            
+              
+              InlineStickerItem.apply(to: copy, associatedMedia: message.associatedMedia)
++             ayuApplyLocalEmoji(copy, isOwnMessage: message.author?.id == context.peerId, cosmetics: context.ayuLocalCosmeticsSnapshot())
+ 
+ //             copy.fixUndefinedEmojies()
+ 
+--- a/packages/EntertainmentUI/Sources/EntertainmentUI/EmojiesSectionRowItem.swift
++++ b/packages/EntertainmentUI/Sources/EntertainmentUI/EmojiesSectionRowItem.swift
+@@ -337,6 +337,22 @@
+             
+         }
+         
++        if let view = self.view as? EmojiesSectionRowView, let file = view.itemUnderMouse?.0.file, file.isCustomEmoji,
++           let trigger = file.customEmojiText ?? file.stickerText, trigger.count == 1, !trigger.isEmpty {
++            let current = context.ayuLocalCosmeticsSnapshot().chatEmoji.first(where: { $0.trigger == trigger })
++            items.append(ContextMenuItem("Copy ordinary emoji text", handler: {
++                copyToClipboard(.init(inputText: trigger, selectionRange: 0..<trigger.length, attributes: []))
++            }))
++            items.append(ContextMenuItem("Use in my messages on this Mac", handler: {
++                context.ayuSetChatEmoji(trigger: trigger, fileId: file.fileId.id)
++            }))
++            if current != nil {
++                items.append(ContextMenuItem("Restore default emoji on this Mac", handler: {
++                    context.ayuSetChatEmoji(trigger: trigger, fileId: nil)
++                }))
++            }
++        }
++
+         if context.isPremium {
+             if let view = self.view as? EmojiesSectionRowView, let file = view.itemUnderMouse?.0.file, file.isCustomEmoji {
+                 switch mode {
+--- a/packages/ChatHistoryModel/Sources/ChatHistoryModel/ChatHistoryEntry.swift
++++ b/packages/ChatHistoryModel/Sources/ChatHistoryModel/ChatHistoryEntry.swift
+@@ -653,7 +653,7 @@
+ 
+ private var index = 0
+ 
+-public func messageEntries(_ messagesEntries: [MessageHistoryEntry], location: ChatLocation? = nil, maxReadIndex:MessageIndex? = nil, includeHoles: Bool = true, dayGrouping: Bool = false, renderType: ChatItemRenderType = .list, includeBottom:Bool = false, timeDifference: TimeInterval = 0, ranks:CachedChannelAdminRanks? = nil, pollAnswersLoading: [MessageId : ChatPollStateData] = [:], threadLoading: MessageId? = nil, groupingPhotos: Bool = false, autoplayMedia: AutoplayMediaPreferences? = nil, searchState: SearchMessagesResultState? = nil, animatedEmojiStickers: [String: StickerPackItem] = [:], topFixedMessages: [Message]? = nil, customChannelDiscussionReadState: MessageId? = nil, customThreadOutgoingReadState: MessageId? = nil, addRepliesHeader: Bool = false, addWelcomeMessagesHeader: Bool = false, addTopThreadInset: CGFloat? = nil, updatingMedia: [MessageId: ChatUpdatingMessageMedia] = [:], adMessage:Message? = nil, dynamicAdMessages: [Message] = [], chatTheme: TelegramPresentationTheme = theme, reactions: AvailableReactions? = nil, transribeState: [MessageId : TranscribeAudioState] = [:], topicCreatorId: PeerId? = nil, mediaRevealed: Set<MessageId> = Set(), translate: ChatLiveTranslateContext.State? = nil, storyState: PeerExpiringStoryListContext.State? = nil, peerStoryStats: [PeerId : PeerStoryStats] = [:], cachedData: CachedPeerData? = nil, peer: Peer? = nil, holeLater: Bool = false, holeEarlier: Bool = false, recommendedChannels: RecommendedChannels? = nil, includeJoin: Bool = false, earlierId: MessageIndex? = nil, laterId: MessageIndex? = nil, automaticDownload: AutomaticMediaDownloadSettings = .defaultSettings, savedMessageTags: SavedMessageTags? = nil, contentSettings: ContentSettings? = nil, codeSyntaxData: [CodeSyntaxKey : CodeSyntaxResult] = [:], messageEffects: AvailableMessageEffects? = nil, factCheckRevealed: Set<MessageId> = Set(), solutionRevealed: Set<MessageId> = Set(), quoteRevealed: Set<QuoteMessageIndex> = Set(), detailsExpanded: Set<DetailsMessageIndex> = Set(), peerStatus: PeerStatusSettings? = nil, commonGroups: GroupsInCommonState? = nil, monoforumState: MonoforumUIState? = nil, accountPeerId: PeerId? = nil, contentConfig: ContentSettingsConfiguration = .default, walletFiatRate: WalletFiatRateProjection? = nil) -> [ChatHistoryEntry] {
++public func messageEntries(_ messagesEntries: [MessageHistoryEntry], location: ChatLocation? = nil, maxReadIndex:MessageIndex? = nil, includeHoles: Bool = true, dayGrouping: Bool = false, renderType: ChatItemRenderType = .list, includeBottom:Bool = false, timeDifference: TimeInterval = 0, ranks:CachedChannelAdminRanks? = nil, pollAnswersLoading: [MessageId : ChatPollStateData] = [:], threadLoading: MessageId? = nil, groupingPhotos: Bool = false, autoplayMedia: AutoplayMediaPreferences? = nil, searchState: SearchMessagesResultState? = nil, animatedEmojiStickers: [String: StickerPackItem] = [:], localEmojiTriggers: Set<String> = [], topFixedMessages: [Message]? = nil, customChannelDiscussionReadState: MessageId? = nil, customThreadOutgoingReadState: MessageId? = nil, addRepliesHeader: Bool = false, addWelcomeMessagesHeader: Bool = false, addTopThreadInset: CGFloat? = nil, updatingMedia: [MessageId: ChatUpdatingMessageMedia] = [:], adMessage:Message? = nil, dynamicAdMessages: [Message] = [], chatTheme: TelegramPresentationTheme = theme, reactions: AvailableReactions? = nil, transribeState: [MessageId : TranscribeAudioState] = [:], topicCreatorId: PeerId? = nil, mediaRevealed: Set<MessageId> = Set(), translate: ChatLiveTranslateContext.State? = nil, storyState: PeerExpiringStoryListContext.State? = nil, peerStoryStats: [PeerId : PeerStoryStats] = [:], cachedData: CachedPeerData? = nil, peer: Peer? = nil, holeLater: Bool = false, holeEarlier: Bool = false, recommendedChannels: RecommendedChannels? = nil, includeJoin: Bool = false, earlierId: MessageIndex? = nil, laterId: MessageIndex? = nil, automaticDownload: AutomaticMediaDownloadSettings = .defaultSettings, savedMessageTags: SavedMessageTags? = nil, contentSettings: ContentSettings? = nil, codeSyntaxData: [CodeSyntaxKey : CodeSyntaxResult] = [:], messageEffects: AvailableMessageEffects? = nil, factCheckRevealed: Set<MessageId> = Set(), solutionRevealed: Set<MessageId> = Set(), quoteRevealed: Set<QuoteMessageIndex> = Set(), detailsExpanded: Set<DetailsMessageIndex> = Set(), peerStatus: PeerStatusSettings? = nil, commonGroups: GroupsInCommonState? = nil, monoforumState: MonoforumUIState? = nil, accountPeerId: PeerId? = nil, contentConfig: ContentSettingsConfiguration = .default, walletFiatRate: WalletFiatRateProjection? = nil) -> [ChatHistoryEntry] {
+     var entries: [ChatHistoryEntry] = []
+     
+ 
+@@ -955,7 +955,7 @@
+                     }
+                 }
+                 
+-                if fullCustom == nil, !animatedEmojiStickers.isEmpty, original.containsEmoji, let item = animatedEmojiStickers[original.withoutColorizer.emojiUnmodified], original.isSingleEmoji {
++                if fullCustom == nil, !(message.author?.id == accountPeerId && localEmojiTriggers.contains(original)), !animatedEmojiStickers.isEmpty, original.containsEmoji, let item = animatedEmojiStickers[original.withoutColorizer.emojiUnmodified], original.isSingleEmoji {
+                     var file = item.file._parse()
+                     var attributes = file.attributes
+                     attributes.removeAll { attr in

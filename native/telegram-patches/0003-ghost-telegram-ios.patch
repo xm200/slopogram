@@ -1,0 +1,232 @@
+diff --git a/submodules/TelegramCore/Sources/Account/Account.swift b/submodules/TelegramCore/Sources/Account/Account.swift
+index 510cb791..03e03d39 100644
+--- a/submodules/TelegramCore/Sources/Account/Account.swift
++++ b/submodules/TelegramCore/Sources/Account/Account.swift
+@@ -1375,7 +1375,7 @@ public class Account {
+         
+         self.contactSyncManager = ContactSyncManager(postbox: postbox, network: network, accountPeerId: peerId, stateManager: self.stateManager)
+         self.localInputActivityManager = PeerInputActivityManager()
+-        self.accountPresenceManager = AccountPresenceManager(shouldKeepOnlinePresence: self.shouldKeepOnlinePresence.get(), network: network)
++        self.accountPresenceManager = AccountPresenceManager(shouldKeepOnlinePresence: self.shouldKeepOnlinePresence.get(), network: network, accountBasePath: basePath)
+         #if os(iOS)
+         // iOS only for now: the Rust engine is the macOS default, and its online keepalive cadence
+         // (pings every 1-2 s while the account is in front) has not been measured there.
+@@ -1512,7 +1512,7 @@ public class Account {
+         self.managedOperationsDisposable.add(managedPendingWalletTransferMessages(postbox: self.postbox).start())
+         self.managedOperationsDisposable.add(managedSynchronizeViewStoriesOperations(postbox: self.postbox, network: self.network, stateManager: self.stateManager).start())
+         self.managedOperationsDisposable.add(managedSynchronizePeerStoriesOperations(postbox: self.postbox, network: self.network, stateManager: self.stateManager).start())
+-        self.managedOperationsDisposable.add(managedLocalTypingActivities(activities: self.localInputActivityManager.allActivities(), postbox: self.stateManager.postbox, network: self.stateManager.network, accountPeerId: self.stateManager.accountPeerId).start())
++        self.managedOperationsDisposable.add(managedLocalTypingActivities(activities: self.localInputActivityManager.allActivities(), postbox: self.stateManager.postbox, network: self.stateManager.network, accountPeerId: self.stateManager.accountPeerId, accountBasePath: self.basePath).start())
+         
+         let extractedExpr1: [Signal<AccountRunningImportantTasks, NoError>] = [
+             self.walletTransferTasksRunning.get() |> map { hasTasks in
+@@ -1740,6 +1740,7 @@ public class Account {
+     }
+     
+     public func updateLocalInputActivity(peerId: PeerActivitySpace, activity: PeerInputActivity, isPresent: Bool) {
++        if isPresent && SlopogramGhostPolicy.isSuppressed(accountBasePath: self.basePath, control: .typing) { return }
+         self.localInputActivityManager.transaction { manager in
+             if isPresent {
+                 manager.addActivity(chatPeerId: peerId, peerId: self.peerId, activity: activity)
+@@ -1750,6 +1751,7 @@ public class Account {
+     }
+     
+     public func acquireLocalInputActivity(peerId: PeerActivitySpace, activity: PeerInputActivity) -> Disposable {
++        if SlopogramGhostPolicy.isSuppressed(accountBasePath: self.basePath, control: .typing) { return EmptyDisposable }
+         return self.localInputActivityManager.acquireActivity(chatPeerId: peerId, peerId: self.peerId, activity: activity)
+     }
+     
+diff --git a/submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift b/submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift
+index 7256668b..aa4f8caf 100644
+--- a/submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift
++++ b/submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift
+@@ -10,18 +10,32 @@ private typealias SignalKitTimer = SwiftSignalKit.Timer
+ private final class AccountPresenceManagerImpl {
+     private let queue: Queue
+     private let network: Network
++    private let accountBasePath: String
+     let isPerformingUpdate = ValuePromise<Bool>(false, ignoreRepeated: true)
+     
+     private var shouldKeepOnlinePresenceDisposable: Disposable?
+     private let currentRequestDisposable = MetaDisposable()
+     private var onlineTimer: SignalKitTimer?
++    private var policyObserver: NSObjectProtocol?
++    private lazy var presenceLoop = SlopogramOnlinePresenceLoop(start: { [weak self] in
++        self?.updatePresence(true)
++    }, stop: { [weak self] in
++        self?.stopOnlinePresence()
++    })
+     
+     private var wasOnline: Bool = false
+     
+-    init(queue: Queue, shouldKeepOnlinePresence: Signal<Bool, NoError>, network: Network) {
++    init(queue: Queue, shouldKeepOnlinePresence: Signal<Bool, NoError>, network: Network, accountBasePath: String) {
+         self.queue = queue
+         self.network = network
+-        
++        self.accountBasePath = accountBasePath
++
++        self.policyObserver = SlopogramGhostPolicy.observe(path: accountBasePath) { [weak self] in
++            self?.queue.async { [weak self] in
++                self?.refreshOnlinePresence()
++            }
++        }
++
+         self.shouldKeepOnlinePresenceDisposable = (shouldKeepOnlinePresence
+         |> distinctUntilChanged
+         |> deliverOn(self.queue)).start(next: { [weak self] value in
+@@ -30,7 +44,8 @@ private final class AccountPresenceManagerImpl {
+             }
+             if self.wasOnline != value {
+                 self.wasOnline = value
+-                self.updatePresence(value)
++                self.refreshOnlinePresence()
++                if !value { self.updatePresence(false) }
+             }
+         })
+     }
+@@ -40,11 +55,31 @@ private final class AccountPresenceManagerImpl {
+         self.shouldKeepOnlinePresenceDisposable?.dispose()
+         self.currentRequestDisposable.dispose()
+         self.onlineTimer?.invalidate()
++        if let policyObserver = self.policyObserver { SlopogramGhostPolicy.removeObserver(policyObserver) }
+     }
+     
++    private func refreshOnlinePresence() {
++        self.presenceLoop.update(online: self.wasOnline, suppressed: SlopogramGhostPolicy.isSuppressed(accountBasePath: self.accountBasePath, control: .online))
++    }
++
++    private func stopOnlinePresence() {
++        self.onlineTimer?.invalidate()
++        self.onlineTimer = nil
++        self.currentRequestDisposable.set(nil)
++        self.isPerformingUpdate.set(false)
++    }
++
+     private func updatePresence(_ isOnline: Bool) {
+         let request: Signal<Api.Bool, MTRpcError>
+         if isOnline {
++            guard self.wasOnline else { return }
++            self.onlineTimer?.invalidate()
++            self.onlineTimer = nil
++            if SlopogramGhostPolicy.isSuppressed(accountBasePath: self.accountBasePath, control: .online) {
++                self.currentRequestDisposable.set(nil)
++                self.isPerformingUpdate.set(false)
++                return
++            }
+             let timer = SignalKitTimer(timeout: 30.0, repeat: false, completion: { [weak self] in
+                 guard let strongSelf = self else {
+                     return
+@@ -77,10 +112,10 @@ final class AccountPresenceManager {
+     private let queue = Queue()
+     private let impl: QueueLocalObject<AccountPresenceManagerImpl>
+     
+-    init(shouldKeepOnlinePresence: Signal<Bool, NoError>, network: Network) {
++    init(shouldKeepOnlinePresence: Signal<Bool, NoError>, network: Network, accountBasePath: String) {
+         let queue = self.queue
+         self.impl = QueueLocalObject(queue: self.queue, generate: {
+-            return AccountPresenceManagerImpl(queue: queue, shouldKeepOnlinePresence: shouldKeepOnlinePresence, network: network)
++            return AccountPresenceManagerImpl(queue: queue, shouldKeepOnlinePresence: shouldKeepOnlinePresence, network: network, accountBasePath: accountBasePath)
+         })
+     }
+     
+diff --git a/submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift b/submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift
+index e8e08874..8b26043d 100644
+--- a/submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift
++++ b/submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift
+@@ -75,7 +75,7 @@ private final class ManagedLocalTypingActivitiesContext {
+     }
+ }
+ 
+-func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]], NoError>, postbox: Postbox, network: Network, accountPeerId: PeerId) -> Signal<Void, NoError> {
++func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]], NoError>, postbox: Postbox, network: Network, accountPeerId: PeerId, accountBasePath: String) -> Signal<Void, NoError> {
+     return Signal { subscriber in
+         let context = Atomic(value: ManagedLocalTypingActivitiesContext())
+         let disposable = activities.start(next: { activities in
+@@ -95,7 +95,7 @@ func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [(PeerI
+                 default:
+                     break
+                 }
+-                disposable.set(requestActivity(postbox: postbox, network: network, accountPeerId: accountPeerId, peerId: peerId.peerId, threadId: threadId, activity: activity?.activity).start())
++                disposable.set(requestActivity(postbox: postbox, network: network, accountPeerId: accountPeerId, accountBasePath: accountBasePath, peerId: peerId.peerId, threadId: threadId, activity: activity?.activity).start())
+             }
+         })
+         return ActionDisposable {
+@@ -141,8 +141,9 @@ private func actionFromActivity(_ activity: PeerInputActivity?) -> Api.SendMessa
+     }
+ }
+ 
+-private func requestActivity(postbox: Postbox, network: Network, accountPeerId: PeerId, peerId: PeerId, threadId: Int64?, activity: PeerInputActivity?) -> Signal<Void, NoError> {
++private func requestActivity(postbox: Postbox, network: Network, accountPeerId: PeerId, accountBasePath: String, peerId: PeerId, threadId: Int64?, activity: PeerInputActivity?) -> Signal<Void, NoError> {
+     return postbox.transaction { transaction -> Signal<Void, NoError> in
++        if activity != nil && SlopogramGhostPolicy.isSuppressed(accountBasePath: accountBasePath, control: .typing) { return .complete() }
+         if let peer = transaction.getPeer(peerId) {
+             if peerId == accountPeerId {
+                 return .complete()
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/Account/SlopogramGhostPolicy.swift
+@@ -0,0 +1,42 @@
++import Foundation
++
++public enum SlopogramGhostControl {
++    case typing
++    case online
++}
++
++public final class SlopogramGhostPolicy {
++    private static let shared = SlopogramGhostPolicy()
++    private let lock = NSLock()
++    private var provider: ((String, SlopogramGhostControl) -> Bool)?
++
++    public static func installProvider(_ provider: ((String, SlopogramGhostControl) -> Bool)?) {
++        shared.lock.lock()
++        shared.provider = provider
++        shared.lock.unlock()
++    }
++
++    private static let changed = Notification.Name("SlopogramGhostPolicyChanged")
++
++    public static func notifyPolicyChanged(path: String) {
++        NotificationCenter.default.post(name: changed, object: nil, userInfo: ["path": path])
++    }
++
++    static func observe(path: String, handler: @escaping () -> Void) -> NSObjectProtocol {
++        NotificationCenter.default.addObserver(forName: changed, object: nil, queue: nil) { notification in
++            guard notification.userInfo?["path"] as? String == path else { return }
++            handler()
++        }
++    }
++
++    static func removeObserver(_ observer: NSObjectProtocol) {
++        NotificationCenter.default.removeObserver(observer)
++    }
++
++    static func isSuppressed(accountBasePath: String, control: SlopogramGhostControl) -> Bool {
++        shared.lock.lock()
++        let provider = shared.provider
++        shared.lock.unlock()
++        return provider?(accountBasePath, control) ?? false
++    }
++}
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/State/SlopogramOnlinePresenceLoop.swift
+@@ -0,0 +1,19 @@
++import Foundation
++
++final class SlopogramOnlinePresenceLoop {
++    private var active = false
++    private let start: () -> Void
++    private let stop: () -> Void
++
++    init(start: @escaping () -> Void, stop: @escaping () -> Void) {
++        self.start = start
++        self.stop = stop
++    }
++
++    func update(online: Bool, suppressed: Bool) {
++        let shouldRun = online && !suppressed
++        guard shouldRun != active else { return }
++        active = shouldRun
++        if shouldRun { start() } else { stop() }
++    }
++}

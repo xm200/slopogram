@@ -1,0 +1,554 @@
+--- /dev/null
++++ b/Telegram-Mac/account/SlopogramStreamerMode.swift
+@@ -0,0 +1,459 @@
++import AppKit
++import Foundation
++import ObjectiveC.runtime
++import UserNotifications
++import SwiftSignalKit
++
++final class SlopogramStreamerMode: NSObject {
++    private static let shared = SlopogramStreamerMode()
++    private static let stateLock = NSLock()
++    private static var active = false
++    private static let activeValue = ValuePromise<Bool>(false, ignoreRepeated: true)
++    private var key = ""
++    private var originalMenu: NSMenu?
++    private var safeMenu: NSMenu?
++    private var safeAppMenu: NSMenu?
++    private var safeRoot: NSMenuItem?
++    private var buildingMenu = false
++    private var protectionDepth = 0
++    private var afterDisable: [() -> Void] = []
++    private var desiredBadge: String?
++    private var desiredDockContent: NSView?
++    private var badgeCaptured = false
++    private var dockContentCaptured = false
++    private var startupEnforced = false
++    private let subtitles = NSMapTable<NSWindow, NSString>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private let tabTitles = NSMapTable<NSWindowTab, NSString>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private let represented = NSMapTable<NSWindow, StreamerRepresentedState>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private let titles = NSMapTable<NSWindow, NSString>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private let titleVisibility = NSMapTable<NSWindow, NSNumber>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private let toolbars = NSMapTable<NSToolbar, NSNumber>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private let curtains = NSMapTable<NSWindow, NSView>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private let hiddenViews = NSMapTable<NSView, NSNumber>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private let responders = NSMapTable<NSWindow, NSResponder>(keyOptions: .weakMemory, valueOptions: .weakMemory)
++    private let accessibility = NSMapTable<NSView, NSNumber>(keyOptions: .weakMemory, valueOptions: .strongMemory)
++    private weak var normalToggle: NSMenuItem?
++    private static var curtainKey: UInt8 = 0
++
++    static var isActive: Bool { stateLock.lock(); defer { stateLock.unlock() }; return active }
++    private static func setActive(_ value: Bool) { stateLock.lock(); active = value; stateLock.unlock(); activeValue.set(value) }
++    static var changes: Signal<Bool, NoError> { activeValue.get() }
++
++    static func install(profileKey: String) {
++        shared.key = "Slopogram.Streamer." + profileKey
++        setActive(UserDefaults.standard.bool(forKey: shared.key))
++        exchange(NSApplication.self, #selector(NSApplication.finishLaunching), #selector(NSApplication.slo_finishLaunching))
++        exchange(NSWindow.self, #selector(NSWindow.addTitlebarAccessoryViewController(_:)), #selector(NSWindow.slo_addTitlebarAccessoryViewController(_:)))
++        exchange(NSDockTile.self, #selector(setter: NSDockTile.contentView), #selector(NSDockTile.slo_setContentView(_:)))
++        exchange(NSMenu.self, #selector(NSMenu.popUp(positioning:at:in:)), #selector(NSMenu.slo_popUp(positioning:at:in:)))
++        guard let menuMeta = object_getClass(NSMenu.self) else { fatalError("Streamer privacy initialization failed") }
++        exchange(menuMeta, #selector(NSMenu.popUpContextMenu(_:with:for:)), #selector(NSMenu.slo_popUpContextMenu(_:with:for:)))
++        exchange(NSView.self, #selector(NSView.accessibilityLabel), #selector(NSView.slo_accessibilityLabel))
++        exchange(NSView.self, #selector(NSView.accessibilityTitle), #selector(NSView.slo_accessibilityTitle))
++        exchange(NSView.self, #selector(NSView.accessibilityHelp), #selector(NSView.slo_accessibilityHelp))
++        exchange(NSView.self, #selector(NSView.accessibilityIdentifier), #selector(NSView.slo_accessibilityIdentifier))
++        exchange(NSView.self, #selector(NSView.accessibilityValue), #selector(NSView.slo_accessibilityValue))
++        exchange(NSView.self, #selector(NSView.accessibilityChildren), #selector(NSView.slo_accessibilityChildren))
++        exchange(NSWindow.self, #selector(NSWindow.makeFirstResponder(_:)), #selector(NSWindow.slo_makeFirstResponder(_:)))
++        exchange(NSApplication.self, #selector(NSApplication.sendEvent(_:)), #selector(NSApplication.slo_sendEvent(_:)))
++        exchange(NSView.self, #selector(setter: NSView.isHidden), #selector(NSView.slo_setHidden(_:)))
++        exchange(NSWindow.self, #selector(NSWindow.order(_:relativeTo:)), #selector(NSWindow.slo_order(_:relativeTo:)))
++        exchange(NSWindow.self, #selector(NSWindow.beginSheet(_:completionHandler:)), #selector(NSWindow.slo_beginSheet(_:completionHandler:)))
++        exchange(NSApplication.self, #selector(NSApplication.runModal(for:)), #selector(NSApplication.slo_runModal(for:)))
++        exchange(NSAlert.self, #selector(NSAlert.runModal), #selector(NSAlert.slo_runModal))
++        exchange(NSAlert.self, #selector(NSAlert.beginSheetModal(for:completionHandler:)), #selector(NSAlert.slo_beginSheetModal(for:completionHandler:)))
++        exchange(NSWindow.self, #selector(NSWindow.orderFront(_:)), #selector(NSWindow.slo_orderFront(_:)))
++        exchange(NSWindow.self, #selector(NSWindow.makeKeyAndOrderFront(_:)), #selector(NSWindow.slo_makeKeyAndOrderFront(_:)))
++        exchange(NSWindow.self, #selector(NSWindow.orderFrontRegardless), #selector(NSWindow.slo_orderFrontRegardless))
++        exchange(NSWindow.self, #selector(NSWindow.setIsVisible(_:)), #selector(NSWindow.slo_setIsVisible(_:)))
++        exchange(NSWindow.self, #selector(setter: NSWindow.contentView), #selector(NSWindow.slo_setContentView(_:)))
++        exchange(NSWindow.self, #selector(setter: NSWindow.titleVisibility), #selector(NSWindow.slo_setTitleVisibility(_:)))
++        exchange(NSWindow.self, #selector(setter: NSWindow.toolbar), #selector(NSWindow.slo_setToolbar(_:)))
++        exchange(NSToolbar.self, #selector(setter: NSToolbar.isVisible), #selector(NSToolbar.slo_setVisible(_:)))
++        exchange(NSWindow.self, #selector(setter: NSWindow.subtitle), #selector(NSWindow.slo_setSubtitle(_:)))
++        exchange(NSWindow.self, #selector(setter: NSWindow.representedURL), #selector(NSWindow.slo_setRepresentedURL(_:)))
++        exchange(NSWindow.self, #selector(setter: NSWindow.representedFilename), #selector(NSWindow.slo_setRepresentedFilename(_:)))
++        exchange(NSWindowTab.self, #selector(setter: NSWindowTab.title), #selector(NSWindowTab.slo_setTitle(_:)))
++        exchange(NSWindow.self, #selector(setter: NSWindow.title), #selector(NSWindow.slo_setTitle(_:)))
++        exchange(NSMenu.self, #selector(NSMenu.removeItem(_:)), #selector(NSMenu.slo_removeItem(_:)))
++        exchange(NSMenu.self, #selector(NSMenu.removeItem(at:)), #selector(NSMenu.slo_removeItem(at:)))
++        exchange(NSMenu.self, #selector(NSMenu.removeAllItems), #selector(NSMenu.slo_removeAllItems))
++        exchange(NSMenuItem.self, #selector(setter: NSMenuItem.isHidden), #selector(NSMenuItem.slo_setHidden(_:)))
++        exchange(NSMenuItem.self, #selector(setter: NSMenuItem.isEnabled), #selector(NSMenuItem.slo_setEnabled(_:)))
++        exchange(NSMenu.self, #selector(NSMenu.addItem(_:)), #selector(NSMenu.slo_addItem(_:)))
++        exchange(NSMenu.self, #selector(NSMenu.insertItem(_:at:)), #selector(NSMenu.slo_insertItem(_:at:)))
++        exchange(NSMenu.self, #selector(NSMenu.addItem(withTitle:action:keyEquivalent:)), #selector(NSMenu.slo_addItem(withTitle:action:keyEquivalent:)))
++        exchange(NSMenuItem.self, #selector(setter: NSMenuItem.title), #selector(NSMenuItem.slo_setTitle(_:)))
++        exchange(NSMenuItem.self, #selector(setter: NSMenuItem.submenu), #selector(NSMenuItem.slo_setSubmenu(_:)))
++        exchange(NSApplication.self, #selector(setter: NSApplication.mainMenu), #selector(NSApplication.slo_setMainMenu(_:)))
++        exchange(NSDockTile.self, #selector(setter: NSDockTile.badgeLabel), #selector(NSDockTile.slo_setBadgeLabel(_:)))
++        exchange(NSView.self, #selector(NSView.setAccessibilityHidden(_:)), #selector(NSView.slo_setAccessibilityHidden(_:)))
++        exchange(NSView.self, #selector(NSView.addSubview(_:)), #selector(NSView.slo_addSubview(_:)))
++        exchange(NSView.self, #selector(NSView.addSubview(_:positioned:relativeTo:)), #selector(NSView.slo_addSubview(_:positioned:relativeTo:)))
++    }
++    private static func exchange(_ cls: AnyClass, _ original: Selector, _ replacement: Selector) {
++        guard let before = class_getInstanceMethod(cls, original), let after = class_getInstanceMethod(cls, replacement) else { fatalError("Streamer privacy initialization failed") }
++        if class_addMethod(cls, original, method_getImplementation(after), method_getTypeEncoding(after)) {
++            class_replaceMethod(cls, replacement, method_getImplementation(before), method_getTypeEncoding(before))
++        } else {
++            method_exchangeImplementations(before, after)
++        }
++    }
++    static func enforceStartup(_ app: NSApplication) {
++        guard isActive, Thread.isMainThread, !shared.startupEnforced else { return }
++        shared.startupEnforced = true
++        for window in app.windows { shared.protect(window) }
++        if shared.originalMenu == nil, app.mainMenu !== shared.safeMenu { shared.originalMenu = app.mainMenu }
++        app.slo_setMainMenu(shared.makeSafeMenu())
++        stateLock.lock(); if !shared.badgeCaptured { shared.desiredBadge = app.dockTile.badgeLabel; shared.badgeCaptured = true }; stateLock.unlock()
++        if !shared.dockContentCaptured { shared.desiredDockContent = app.dockTile.contentView; shared.dockContentCaptured = true }
++        app.dockTile.slo_setBadgeLabel(nil); app.dockTile.slo_setContentView(nil)
++        shared.clearNotifications()
++    }
++    private func clearNotifications() {
++        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
++        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
++        NSUserNotificationCenter.default.removeAllDeliveredNotifications()
++    }
++    static func toggle() { shared.setEnabled(!isActive) }
++    static func turnOff() { shared.setEnabled(false) }
++    #if DEBUG
++    static func setForTesting(_ enabled: Bool) { shared.setEnabled(enabled) }
++    #endif
++    static func whenDisabled(_ action: @escaping () -> Void) {
++        precondition(Thread.isMainThread)
++        if isActive { shared.afterDisable.append(action) } else { action() }
++    }
++    @objc private func disable(_ sender: Any?) { setEnabled(false) }
++    @objc private func enable(_ sender: Any?) { setEnabled(true) }
++    private func setEnabled(_ enabled: Bool) {
++        precondition(Thread.isMainThread)
++        guard enabled != SlopogramStreamerMode.isActive else { return }
++        SlopogramStreamerMode.setActive(enabled)
++        UserDefaults.standard.set(enabled, forKey: key)
++        if enabled {
++            for window in NSApp.windows { protect(window) }
++            if originalMenu == nil { originalMenu = NSApp.mainMenu }
++            NSApp.slo_setMainMenu(makeSafeMenu())
++            SlopogramStreamerMode.stateLock.lock(); desiredBadge = NSApp.dockTile.badgeLabel; SlopogramStreamerMode.stateLock.unlock()
++            desiredDockContent = NSApp.dockTile.contentView
++            NSApp.dockTile.slo_setBadgeLabel(nil); NSApp.dockTile.slo_setContentView(nil)
++            clearNotifications()
++        } else {
++            for window in NSApp.windows { unprotect(window) }
++            if let originalMenu { installNormalToggle(in: originalMenu); NSApp.slo_setMainMenu(originalMenu) }
++            self.originalMenu = nil
++            SlopogramStreamerMode.stateLock.lock(); let badge = desiredBadge; SlopogramStreamerMode.stateLock.unlock()
++            NSApp.dockTile.slo_setBadgeLabel(badge); NSApp.dockTile.slo_setContentView(desiredDockContent)
++            desiredDockContent = nil; dockContentCaptured = false
++            SlopogramStreamerMode.stateLock.lock(); badgeCaptured = false; SlopogramStreamerMode.stateLock.unlock()
++            let deferred = afterDisable; afterDisable.removeAll()
++            deferred.forEach { $0() }
++        }
++    }
++    private func makeSafeMenu() -> NSMenu {
++        if let safeMenu { return safeMenu }
++        buildingMenu = true
++        defer { buildingMenu = false }
++        let result = NSMenu()
++        let root = NSMenuItem()
++        let menu = NSMenu(title: "Slopogram")
++        safeMenu = result; safeAppMenu = menu; safeRoot = root
++        let off = NSMenuItem(title: "Turn off streamer mode", action: #selector(disable(_:)), keyEquivalent: "")
++        off.target = self; menu.addItem(off)
++        menu.addItem(withTitle: "Quit Slopogram", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
++        root.submenu = menu; result.addItem(root)
++        return result
++    }
++    static func filterMenu(_ incoming: NSMenu?) -> NSMenu? {
++        if isActive && !Thread.isMainThread { return nil }
++        guard isActive else { if let incoming { shared.installNormalToggle(in: incoming) }; return incoming }
++        if incoming !== shared.safeMenu { shared.originalMenu = incoming }
++        return shared.makeSafeMenu()
++    }
++    private func installNormalToggle(in menu: NSMenu) {
++        guard let appMenu = menu.item(at: 0)?.submenu else { return }
++        if normalToggle?.menu === appMenu { return }
++        let item = NSMenuItem(title: "Turn on streamer mode", action: #selector(enable(_:)), keyEquivalent: "")
++        item.target = self; appMenu.addItem(.separator()); appMenu.addItem(item); normalToggle = item
++        let themeItem = NSMenuItem(title: "Import Theme…", action: NSSelectorFromString("slopogramImportTheme:"), keyEquivalent: "")
++        appMenu.addItem(themeItem)
++    }
++    static func allowMenuMutation(_ menu: NSMenu) -> Bool {
++        if isActive && !Thread.isMainThread { return false }
++        return !isActive || shared.buildingMenu || (menu !== shared.safeMenu && menu !== shared.safeAppMenu)
++    }
++    static func allowMenuItemMutation(_ item: NSMenuItem) -> Bool {
++        if isActive && !Thread.isMainThread { return false }
++        guard isActive && !shared.buildingMenu else { return true }
++        if item === shared.safeRoot { return false }
++        if let menu = item.menu, menu === shared.safeAppMenu || menu === shared.safeMenu { return false }
++        return true
++    }
++    static func filterDockContent(_ incoming: NSView?) -> NSView? {
++        guard isActive else { return incoming }
++        guard Thread.isMainThread else { return nil }
++        shared.desiredDockContent = incoming; shared.dockContentCaptured = true
++        return nil
++    }
++    static func filterBadge(_ incoming: String?) -> String? {
++        guard isActive else { return incoming }
++        stateLock.lock(); shared.desiredBadge = incoming; shared.badgeCaptured = true; stateLock.unlock()
++        return nil
++    }
++    static func setTitle(_ window: NSWindow, title: String) {
++        guard isActive else { window.slo_setTitle(title); return }
++        guard Thread.isMainThread else { window.slo_setTitle("Slopogram"); return }
++        if shared.protectionDepth == 0 { shared.titles.setObject(title as NSString, forKey: window) }
++        window.slo_setTitle("Slopogram")
++    }
++    static func setSubtitle(_ window: NSWindow, value: String) {
++        guard isActive else { window.slo_setSubtitle(value); return }
++        guard Thread.isMainThread else { window.slo_setSubtitle(""); return }
++        if shared.protectionDepth == 0 { shared.subtitles.setObject(value as NSString, forKey: window) }; window.slo_setSubtitle("")
++    }
++    static func setTabTitle(_ tab: NSWindowTab, value: String) {
++        guard isActive else { tab.slo_setTitle(value); return }
++        guard Thread.isMainThread else { tab.slo_setTitle("Slopogram"); return }
++        if shared.protectionDepth == 0 { shared.tabTitles.setObject(value as NSString, forKey: tab) }; tab.slo_setTitle("Slopogram")
++    }
++    private func representedState(_ window: NSWindow) -> StreamerRepresentedState {
++        if let existing = represented.object(forKey: window) { return existing }
++        let state = StreamerRepresentedState(url: window.representedURL, filename: window.representedFilename)
++        represented.setObject(state, forKey: window); return state
++    }
++    static func setRepresentedURL(_ window: NSWindow, value: URL?) {
++        guard isActive else { window.slo_setRepresentedURL(value); return }
++        guard Thread.isMainThread else { window.slo_setRepresentedURL(nil); return }
++        if shared.protectionDepth == 0 { let state = shared.representedState(window); state.url = value; state.useURL = true }
++        window.slo_setRepresentedURL(nil)
++    }
++    static func setRepresentedFilename(_ window: NSWindow, value: String) {
++        guard isActive else { window.slo_setRepresentedFilename(value); return }
++        guard Thread.isMainThread else { window.slo_setRepresentedFilename(""); return }
++        if shared.protectionDepth == 0 { let state = shared.representedState(window); state.filename = value; state.useURL = false }
++        window.slo_setRepresentedFilename("")
++    }
++    static func setTitleVisibility(_ window: NSWindow, value: NSWindow.TitleVisibility) {
++        guard isActive else { window.slo_setTitleVisibility(value); return }
++        guard Thread.isMainThread else { window.slo_setTitleVisibility(.hidden); return }
++        if shared.protectionDepth == 0 { shared.titleVisibility.setObject(NSNumber(value: value.rawValue), forKey: window) }
++        window.slo_setTitleVisibility(.hidden)
++    }
++    static func setToolbarVisibility(_ toolbar: NSToolbar, visible: Bool) {
++        guard isActive else { toolbar.slo_setVisible(visible); return }
++        guard Thread.isMainThread else { toolbar.slo_setVisible(false); return }
++        if shared.protectionDepth == 0 { shared.toolbars.setObject(NSNumber(value: visible), forKey: toolbar) }
++        toolbar.slo_setVisible(false)
++    }
++    @discardableResult static func prepare(_ window: NSWindow) -> Bool {
++        guard isActive else { return true }
++        guard Thread.isMainThread else { return false }
++        shared.protect(window)
++        return true
++    }
++    private func protect(_ window: NSWindow) {
++        protectionDepth += 1
++        defer { protectionDepth -= 1 }
++        if titles.object(forKey: window) == nil { titles.setObject(window.title as NSString, forKey: window) }
++        if titleVisibility.object(forKey: window) == nil { titleVisibility.setObject(NSNumber(value: window.titleVisibility.rawValue), forKey: window) }
++        if subtitles.object(forKey: window) == nil { subtitles.setObject(window.subtitle as NSString, forKey: window) }
++        if tabTitles.object(forKey: window.tab) == nil { tabTitles.setObject(window.tab.title as NSString, forKey: window.tab) }
++        _ = representedState(window)
++        window.slo_setTitle("Slopogram"); window.slo_setSubtitle(""); window.tab.slo_setTitle("Slopogram")
++        window.slo_setRepresentedURL(nil); window.slo_setTitleVisibility(.hidden)
++        for accessory in window.titlebarAccessoryViewControllers { hideView(accessory.view) }
++        if let toolbar = window.toolbar {
++            if toolbars.object(forKey: toolbar) == nil { toolbars.setObject(NSNumber(value: toolbar.isVisible), forKey: toolbar) }
++            toolbar.slo_setVisible(false)
++        }
++        guard let content = window.contentView else { return }
++        if let old = curtains.object(forKey: window), old.superview === content { Self.reassert(content); return }
++        detachCurtain(window)
++        let curtain = StreamerCurtain(frame: content.bounds)
++        curtain.autoresizingMask = [.width, .height]
++        objc_setAssociatedObject(content, &Self.curtainKey, curtain, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
++        for child in content.subviews { hideView(child) }
++        content.addSubview(curtain, positioned: .above, relativeTo: nil)
++        curtains.setObject(curtain, forKey: window)
++        if responders.object(forKey: window) == nil, let responder = window.firstResponder { responders.setObject(responder, forKey: window) }
++        _ = window.slo_makeFirstResponder(curtain)
++    }
++    private func detachCurtain(_ window: NSWindow) {
++        if let curtain = curtains.object(forKey: window) {
++            if let host = curtain.superview {
++                objc_setAssociatedObject(host, &Self.curtainKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
++                for child in host.subviews where child !== curtain { restoreView(child) }
++            }
++            curtain.removeFromSuperview(); curtains.removeObject(forKey: window)
++        }
++    }
++    static func beforeContentReplacement(_ window: NSWindow) {
++        if isActive && Thread.isMainThread { shared.detachCurtain(window) }
++    }
++    private func unprotect(_ window: NSWindow) {
++        protectionDepth += 1
++        defer { protectionDepth -= 1 }
++        detachCurtain(window)
++        for accessory in window.titlebarAccessoryViewControllers { restoreView(accessory.view) }
++        if let responder = responders.object(forKey: window) { _ = window.slo_makeFirstResponder(responder); responders.removeObject(forKey: window) }
++        if let state = represented.object(forKey: window) {
++            if state.useURL { window.slo_setRepresentedURL(state.url) } else { window.slo_setRepresentedFilename(state.filename) }
++            represented.removeObject(forKey: window)
++        }
++        if let subtitle = subtitles.object(forKey: window) { window.slo_setSubtitle(subtitle as String); subtitles.removeObject(forKey: window) }
++        if let tabTitle = tabTitles.object(forKey: window.tab) { window.tab.slo_setTitle(tabTitle as String); tabTitles.removeObject(forKey: window.tab) }
++        if let title = titles.object(forKey: window) { window.slo_setTitle(title as String); titles.removeObject(forKey: window) }
++        if let value = titleVisibility.object(forKey: window), let visibility = NSWindow.TitleVisibility(rawValue: value.intValue) { window.slo_setTitleVisibility(visibility); titleVisibility.removeObject(forKey: window) }
++        if let toolbar = window.toolbar, let visible = toolbars.object(forKey: toolbar) { toolbar.slo_setVisible(visible.boolValue); toolbars.removeObject(forKey: toolbar) }
++    }
++    static func firstResponder(_ window: NSWindow, responder: NSResponder?) -> Bool {
++        guard isActive else { return window.slo_makeFirstResponder(responder) }
++        guard Thread.isMainThread else { return false }
++        guard let curtain = shared.curtains.object(forKey: window) else {
++            if let responder { shared.responders.setObject(responder, forKey: window) }
++            return false
++        }
++        if responder !== curtain, let responder { shared.responders.setObject(responder, forKey: window) }
++        return window.slo_makeFirstResponder(curtain)
++    }
++    static func shouldBlockEvent(_ event: NSEvent) -> Bool {
++        guard isActive, event.type == .keyDown || event.type == .keyUp, let window = event.window else { return false }
++        return shared.curtains.object(forKey: window) != nil
++    }
++    private func hideView(_ view: NSView) {
++        if hiddenViews.object(forKey: view) == nil { hiddenViews.setObject(NSNumber(value: view.isHidden), forKey: view) }
++        view.slo_setHidden(true)
++        hideAccessibility(view)
++    }
++    private func restoreView(_ view: NSView) {
++        restoreAccessibility(view)
++        if let previous = hiddenViews.object(forKey: view) { view.slo_setHidden(previous.boolValue); hiddenViews.removeObject(forKey: view) }
++    }
++    static func setHidden(_ view: NSView, hidden: Bool) {
++        guard isActive, Thread.isMainThread, shared.hiddenViews.object(forKey: view) != nil else { view.slo_setHidden(hidden); return }
++        shared.hiddenViews.setObject(NSNumber(value: hidden), forKey: view)
++        view.slo_setHidden(true)
++    }
++    private func hideAccessibility(_ view: NSView) {
++        if accessibility.object(forKey: view) == nil { accessibility.setObject(NSNumber(value: view.isAccessibilityHidden()), forKey: view) }
++        view.slo_setAccessibilityHidden(true)
++    }
++    private func restoreAccessibility(_ view: NSView) {
++        if let previous = accessibility.object(forKey: view) { view.slo_setAccessibilityHidden(previous.boolValue); accessibility.removeObject(forKey: view) }
++    }
++    static func setAccessibilityHidden(_ view: NSView, hidden: Bool) {
++        if isActive && !Thread.isMainThread { view.slo_setAccessibilityHidden(true); return }
++        guard isActive, shared.accessibility.object(forKey: view) != nil else { view.slo_setAccessibilityHidden(hidden); return }
++        shared.accessibility.setObject(NSNumber(value: hidden), forKey: view)
++        view.slo_setAccessibilityHidden(true)
++    }
++    static func curtainHost(_ view: NSView) -> NSView? {
++        guard isActive else { return nil }
++        return objc_getAssociatedObject(view, &curtainKey) as? NSView
++    }
++    static func hideAccessory(_ accessory: NSTitlebarAccessoryViewController) {
++        guard isActive, Thread.isMainThread else { return }
++        shared.hideView(accessory.view)
++    }
++    static func reassert(_ view: NSView, added: NSView? = nil) {
++        guard isActive, Thread.isMainThread, let curtain = objc_getAssociatedObject(view, &curtainKey) as? NSView, curtain !== added else { return }
++        if let added { shared.hideView(added) }
++        view.slo_addSubview(curtain, positioned: .above, relativeTo: nil)
++    }
++}
++
++private final class StreamerRepresentedState: NSObject {
++    var url: URL?
++    var filename: String
++    var useURL: Bool
++    init(url: URL?, filename: String) { self.url = url; self.filename = filename; self.useURL = url != nil }
++}
++
++private final class StreamerCurtain: NSView {
++    override init(frame frameRect: NSRect) {
++        super.init(frame: frameRect)
++        wantsLayer = true; layer?.backgroundColor = NSColor.black.cgColor; layer?.isOpaque = true; layer?.zPosition = 1_000_000
++        setAccessibilityElement(true); setAccessibilityLabel("Streamer mode is on")
++        let label = NSTextField(labelWithString: "Streamer mode is on")
++        label.textColor = .white; label.font = .systemFont(ofSize: 18, weight: .medium); label.alignment = .center
++        label.translatesAutoresizingMaskIntoConstraints = false; addSubview(label)
++        let button = NSButton(title: "Turn off streamer mode", target: self, action: #selector(turnOff(_:)))
++        button.translatesAutoresizingMaskIntoConstraints = false; addSubview(button)
++        NSLayoutConstraint.activate([label.centerXAnchor.constraint(equalTo: centerXAnchor), label.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -20), button.centerXAnchor.constraint(equalTo: centerXAnchor), button.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 20)])
++    }
++    required init?(coder: NSCoder) { nil }
++    @objc private func turnOff(_ sender: Any?) { SlopogramStreamerMode.turnOff() }
++    override var acceptsFirstResponder: Bool { true }
++    override func keyDown(with event: NSEvent) {}
++    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) ?? self }
++}
++
++extension NSWindow {
++    @objc fileprivate func slo_addTitlebarAccessoryViewController(_ controller: NSTitlebarAccessoryViewController) { SlopogramStreamerMode.hideAccessory(controller); slo_addTitlebarAccessoryViewController(controller) }
++    @objc fileprivate func slo_makeFirstResponder(_ responder: NSResponder?) -> Bool { SlopogramStreamerMode.firstResponder(self, responder: responder) }
++    @objc fileprivate func slo_order(_ place: NSWindow.OrderingMode, relativeTo other: Int) { if place != .out && !SlopogramStreamerMode.prepare(self) { return }; slo_order(place, relativeTo: other) }
++    @objc fileprivate func slo_beginSheet(_ sheet: NSWindow, completionHandler: ((NSApplication.ModalResponse) -> Void)? = nil) { guard SlopogramStreamerMode.prepare(sheet) else { completionHandler?(.abort); return }; slo_beginSheet(sheet, completionHandler: completionHandler) }
++    @objc fileprivate func slo_setSubtitle(_ value: String) { SlopogramStreamerMode.setSubtitle(self, value: value) }
++    @objc fileprivate func slo_setRepresentedURL(_ value: URL?) { SlopogramStreamerMode.setRepresentedURL(self, value: value) }
++    @objc fileprivate func slo_setRepresentedFilename(_ value: String) { SlopogramStreamerMode.setRepresentedFilename(self, value: value) }
++    @objc fileprivate func slo_setTitleVisibility(_ visibility: NSWindow.TitleVisibility) { SlopogramStreamerMode.setTitleVisibility(self, value: visibility) }
++    @objc fileprivate func slo_setToolbar(_ toolbar: NSToolbar?) { slo_setToolbar(toolbar); if isVisible { SlopogramStreamerMode.prepare(self) } }
++    @objc fileprivate func slo_orderFront(_ sender: Any?) { guard SlopogramStreamerMode.prepare(self) else { return }; slo_orderFront(sender) }
++    @objc fileprivate func slo_makeKeyAndOrderFront(_ sender: Any?) { guard SlopogramStreamerMode.prepare(self) else { return }; slo_makeKeyAndOrderFront(sender) }
++    @objc fileprivate func slo_orderFrontRegardless() { guard SlopogramStreamerMode.prepare(self) else { return }; slo_orderFrontRegardless() }
++    @objc fileprivate func slo_setIsVisible(_ visible: Bool) { if visible && !SlopogramStreamerMode.prepare(self) { return }; slo_setIsVisible(visible) }
++    @objc fileprivate func slo_setContentView(_ view: NSView?) { if SlopogramStreamerMode.isActive && !Thread.isMainThread { return }; SlopogramStreamerMode.beforeContentReplacement(self); slo_setContentView(view); if isVisible { SlopogramStreamerMode.prepare(self) } }
++    @objc fileprivate func slo_setTitle(_ title: String) { SlopogramStreamerMode.setTitle(self, title: title) }
++}
++extension NSMenu {
++    @objc fileprivate func slo_popUp(positioning item: NSMenuItem?, at point: NSPoint, in view: NSView?) -> Bool { guard !SlopogramStreamerMode.isActive else { return false }; return slo_popUp(positioning: item, at: point, in: view) }
++    @objc fileprivate class func slo_popUpContextMenu(_ menu: NSMenu, with event: NSEvent, for view: NSView) { if !SlopogramStreamerMode.isActive { slo_popUpContextMenu(menu, with: event, for: view) } }
++    @objc fileprivate func slo_removeItem(_ item: NSMenuItem) { if SlopogramStreamerMode.allowMenuMutation(self) { slo_removeItem(item) } }
++    @objc fileprivate func slo_removeItem(at index: Int) { if SlopogramStreamerMode.allowMenuMutation(self) { slo_removeItem(at: index) } }
++    @objc fileprivate func slo_removeAllItems() { if SlopogramStreamerMode.allowMenuMutation(self) { slo_removeAllItems() } }
++    @objc fileprivate func slo_addItem(_ item: NSMenuItem) { if SlopogramStreamerMode.allowMenuMutation(self) { slo_addItem(item) } }
++    @objc fileprivate func slo_insertItem(_ item: NSMenuItem, at index: Int) { if SlopogramStreamerMode.allowMenuMutation(self) { slo_insertItem(item, at: index) } }
++    @objc fileprivate func slo_addItem(withTitle title: String, action: Selector?, keyEquivalent: String) -> NSMenuItem {
++        guard SlopogramStreamerMode.allowMenuMutation(self) else { return NSMenuItem() }
++        return slo_addItem(withTitle: title, action: action, keyEquivalent: keyEquivalent)
++    }
++}
++extension NSMenuItem {
++    @objc fileprivate func slo_setHidden(_ hidden: Bool) { if SlopogramStreamerMode.allowMenuItemMutation(self) { slo_setHidden(hidden) } }
++    @objc fileprivate func slo_setEnabled(_ enabled: Bool) { if SlopogramStreamerMode.allowMenuItemMutation(self) { slo_setEnabled(enabled) } }
++    @objc fileprivate func slo_setTitle(_ title: String) { if SlopogramStreamerMode.allowMenuItemMutation(self) { slo_setTitle(title) } }
++    @objc fileprivate func slo_setSubmenu(_ menu: NSMenu?) { if SlopogramStreamerMode.allowMenuItemMutation(self) { slo_setSubmenu(menu) } }
++}
++extension NSApplication {
++    @objc fileprivate func slo_finishLaunching() { SlopogramStreamerMode.enforceStartup(self); slo_finishLaunching() }
++    @objc fileprivate func slo_sendEvent(_ event: NSEvent) { if !SlopogramStreamerMode.shouldBlockEvent(event) { slo_sendEvent(event) } }
++    @objc fileprivate func slo_runModal(for window: NSWindow) -> NSApplication.ModalResponse { guard SlopogramStreamerMode.prepare(window) else { return .abort }; return slo_runModal(for: window) }
++    @objc fileprivate func slo_setMainMenu(_ menu: NSMenu?) { slo_setMainMenu(SlopogramStreamerMode.filterMenu(menu)) }
++}
++extension NSAlert {
++    @objc fileprivate func slo_runModal() -> NSApplication.ModalResponse { guard SlopogramStreamerMode.prepare(window) else { return .abort }; return slo_runModal() }
++    @objc fileprivate func slo_beginSheetModal(for window: NSWindow, completionHandler: ((NSApplication.ModalResponse) -> Void)? = nil) { guard SlopogramStreamerMode.prepare(self.window) else { completionHandler?(.abort); return }; slo_beginSheetModal(for: window, completionHandler: completionHandler) }
++}
++extension NSWindowTab {
++    @objc fileprivate func slo_setTitle(_ title: String) { SlopogramStreamerMode.setTabTitle(self, value: title) }
++}
++extension NSToolbar {
++    @objc fileprivate func slo_setVisible(_ visible: Bool) { SlopogramStreamerMode.setToolbarVisibility(self, visible: visible) }
++}
++extension NSDockTile {
++    @objc fileprivate func slo_setContentView(_ view: NSView?) { slo_setContentView(SlopogramStreamerMode.filterDockContent(view)) }
++    @objc fileprivate func slo_setBadgeLabel(_ label: String?) { slo_setBadgeLabel(SlopogramStreamerMode.filterBadge(label)) }
++}
++extension NSView {
++    @objc fileprivate func slo_accessibilityLabel() -> String? { SlopogramStreamerMode.curtainHost(self) == nil ? slo_accessibilityLabel() : nil }
++    @objc fileprivate func slo_accessibilityTitle() -> String? { SlopogramStreamerMode.curtainHost(self) == nil ? slo_accessibilityTitle() : nil }
++    @objc fileprivate func slo_accessibilityHelp() -> String? { SlopogramStreamerMode.curtainHost(self) == nil ? slo_accessibilityHelp() : nil }
++    @objc fileprivate func slo_accessibilityIdentifier() -> String? { SlopogramStreamerMode.curtainHost(self) == nil ? slo_accessibilityIdentifier() : nil }
++    @objc fileprivate func slo_accessibilityValue() -> Any? { SlopogramStreamerMode.curtainHost(self) == nil ? slo_accessibilityValue() : nil }
++    @objc fileprivate func slo_accessibilityChildren() -> [Any]? { if let curtain = SlopogramStreamerMode.curtainHost(self) { return [curtain] }; return slo_accessibilityChildren() }
++    @objc fileprivate func slo_setHidden(_ hidden: Bool) { SlopogramStreamerMode.setHidden(self, hidden: hidden) }
++    @objc fileprivate func slo_setAccessibilityHidden(_ hidden: Bool) { SlopogramStreamerMode.setAccessibilityHidden(self, hidden: hidden) }
++    @objc fileprivate func slo_addSubview(_ view: NSView) { slo_addSubview(view); SlopogramStreamerMode.reassert(self, added: view) }
++    @objc fileprivate func slo_addSubview(_ view: NSView, positioned place: NSWindow.OrderingMode, relativeTo relative: NSView?) { slo_addSubview(view, positioned: place, relativeTo: relative); SlopogramStreamerMode.reassert(self, added: view) }
++}
+--- a/Telegram-Mac/utils/UNUserNotifications.swift
++++ b/Telegram-Mac/utils/UNUserNotifications.swift
+@@ -185,6 +185,7 @@
+     
+ 
+     @objc func userNotificationCenter(_ center: NSUserNotificationCenter, didDismissAlert notification: NSUserNotification) {
++        guard !SlopogramStreamerMode.isActive else { return }
+         if let userInfo = notification.userInfo, let timestamp = userInfo["timestamp"] as? Int32, let _ = userInfo["accountId"] as? Int64, let messageId = getNotificationMessageId(userInfo: userInfo, for: "reply") {
+             
+             bindings.applyMaxReadIndexInteractively(MessageIndex(id: messageId, timestamp: timestamp))
+@@ -236,7 +237,10 @@
+     }
+     
+     override func add(_ notification: NSUserNotification) -> Void {
+-        NSUserNotificationCenter.default.deliver(notification)
++        DispatchQueue.main.async {
++            guard !SlopogramStreamerMode.isActive else { return }
++            NSUserNotificationCenter.default.deliver(notification)
++        }
+     }
+ }
+     
+@@ -251,12 +255,12 @@
+     
+     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+ 
+-        completionHandler([.alert, .sound])
++        completionHandler(SlopogramStreamerMode.isActive ? [] : [.alert, .sound])
+     }
+     
+     
+     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+-    
++        guard !SlopogramStreamerMode.isActive else { completionHandler(); return }
+         switch response.actionIdentifier {
+         case UNNotificationDismissActionIdentifier: // Notification was dismissed by user
+             completionHandler()
+@@ -289,6 +293,7 @@
+         }
+     }
+     override func add(_ notification: NSUserNotification) -> Void {
++        guard !SlopogramStreamerMode.isActive else { return }
+         let content = UNMutableNotificationContent()
+         content.title = notification.title ?? ""
+         content.body = notification.informativeText ?? ""
+@@ -306,9 +311,8 @@
+         content.userInfo = notification.userInfo ?? [:]
+         let soundSettings = self.soundSettings
+         
+-        guard let containerUrl = ApiEnvironment.legacyContainerURL?.path else {
+-            return
+-        }
++        let containerUrl = ApiEnvironment.containerURL?.path
++        var localSound: String?
+         
+         if let soundName = notification.soundName {
+             if soundName == "default" {
+@@ -317,9 +321,9 @@
+                 if let soundSettings = soundSettings {
+                     switch soundSettings {
+                     case .enabled:
+-                        if soundName.hasPrefix(containerUrl) {
++                        if let containerUrl, soundName.hasPrefix(containerUrl) {
+                             content.sound = nil
+-                            appDelegate?.playSound(soundName)
++                            localSound = soundName
+                         } else {
+                             let name = soundName.nsstring.lastPathComponent.nsstring.deletingPathExtension
+                             content.sound = .init(named: .init(name))
+@@ -331,10 +335,18 @@
+             }
+         }
+         
+-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: notification.identifier ?? "", content: content, trigger: nil), withCompletionHandler: { error in
+-                        
+-           
+-        })
++        let identifier = notification.identifier ?? ""
++        DispatchQueue.main.async {
++            guard !SlopogramStreamerMode.isActive else { return }
++            if let localSound { appDelegate?.playSound(localSound) }
++            let center = UNUserNotificationCenter.current()
++            center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil), withCompletionHandler: { _ in
++                if SlopogramStreamerMode.isActive {
++                    center.removePendingNotificationRequests(withIdentifiers: [identifier])
++                    center.removeDeliveredNotifications(withIdentifiers: [identifier])
++                }
++            })
++        }
+     }
+     
+     override func authorize(completion: @escaping (UNUserNotifications) -> Void) {

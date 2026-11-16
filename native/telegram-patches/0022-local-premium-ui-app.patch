@@ -1,0 +1,172 @@
+--- a/packages/SettingsUI/Sources/SettingsUI/AccountInfoItem.swift
++++ b/packages/SettingsUI/Sources/SettingsUI/AccountInfoItem.swift
+@@ -157,6 +157,8 @@ private class AccountInfoView : GeneralContainableRowView {
+     
+     private let avatarView:AvatarControl
+     private let titleView = TextView()
++    private let localCosmeticView = NSTextField(labelWithString: "")
++    private let localCosmeticDisposable = MetaDisposable()
+     private let textView: TextView = TextView()
+     private let actionView: ImageView = ImageView()
+     
+@@ -193,6 +195,10 @@ private class AccountInfoView : GeneralContainableRowView {
+         
+         container.addSubview(textView)
+         container.addSubview(titleView)
++        localCosmeticView.font = NSFont.systemFont(ofSize: 14, weight: .medium)
++        localCosmeticView.textColor = theme.colors.accent
++        localCosmeticView.setAccessibilityElement(true)
++        container.addSubview(localCosmeticView)
+         
+         addSubview(container)
+         avatarContainer.set(handler: { [weak self] _ in
+@@ -272,6 +278,7 @@ private class AccountInfoView : GeneralContainableRowView {
+     
+     deinit {
+         playStatusDisposable.dispose()
++        localCosmeticDisposable.dispose()
+         removeNotificationListeners()
+     }
+ 
+@@ -345,7 +352,6 @@ private class AccountInfoView : GeneralContainableRowView {
+         super.set(item: item)
+         
+         if let item = item as? AccountInfoItem {
+-            
+             avatarContainer.setAccessibilityLabel(strings().voiceOverCommonPhotoOf(item.peer.displayTitle))
+             
+             var interactiveStatus: Reactions.InteractiveStatus? = nil
+@@ -385,6 +391,31 @@ private class AccountInfoView : GeneralContainableRowView {
+         
+             
+             titleView.update(isSelect ? item.titleActiveLayout : item.titleLayout)
++            localCosmeticDisposable.set(nil)
++            statusControl?.isHidden = false
++            localCosmeticView.isHidden = true
++            localCosmeticView.stringValue = ""
++            if item.peer.id == item.context.account.peerId {
++                localCosmeticDisposable.set((item.context.ayuLocalCosmetics() |> deliverOnMainQueue).start(next: { [weak self, weak item] cosmetic in
++                    guard let self, let item, self.item === item else { return }
++                    self.localCosmeticView.stringValue = cosmetic.decoration(realPremium: item.peer.isPremium)
++                    self.localCosmeticView.setAccessibilityLabel(cosmetic.accessibilityDescription)
++                    self.localCosmeticView.isHidden = self.localCosmeticView.stringValue.isEmpty
++                    self.localCosmeticView.sizeToFit()
++                    let base = self.isSelect ? item.titleActiveLayout : item.titleLayout
++                    if cosmetic.enabled, let rgb = cosmetic.profileColor, !self.isSelect {
++                        let text = NSMutableAttributedString(attributedString: base.attributedString)
++                        text.addAttribute(.foregroundColor, value: NSColor(rgb: rgb), range: NSRange(location: 0, length: text.length))
++                        let layout = TextViewLayout(text, maximumNumberOfLines: 1)
++                        layout.measure(width: max(1, base.layoutSize.width + 1))
++                        self.titleView.update(layout)
++                    } else { self.titleView.update(base) }
++                    let replaceStatus = cosmetic.enabled && cosmetic.emoji != nil && item.peer.emojiStatus != nil && !item.peer.isVerified && !item.peer.isScam && !item.peer.isFake
++                    self.statusControl?.isHidden = replaceStatus
++                    self.needsLayout = true
++                }))
++            }
++            
+             
+             actionView.image = item.isSelected ? nil : theme.icons.generalNext
+             actionView.sizeToFit()
+@@ -486,6 +517,7 @@ private class AccountInfoView : GeneralContainableRowView {
+     
+     public override func updateColors() {
+         super.updateColors()
++        localCosmeticView.textColor = theme.colors.accent
+         textView.backgroundColor = backdorColor
+     }
+     
+@@ -497,7 +529,7 @@ private class AccountInfoView : GeneralContainableRowView {
+         
+         let h: CGFloat = statusControl != nil ? 6 : 0
+         
+-        container.setFrameSize(NSMakeSize(max(titleView.frame.width, textView.frame.width + (statusControl != nil ? 40 : 0)), titleView.frame.height + textView.frame.height + 2 + h))
++        container.setFrameSize(NSMakeSize(max(titleView.frame.width + (statusControl?.frame.width ?? 0) + localCosmeticView.frame.width + 10, textView.frame.width + (statusControl != nil ? 40 : 0)), titleView.frame.height + textView.frame.height + 2 + h))
+         
+         titleView.setFrameOrigin(0, h)
+         textView.setFrameOrigin(0, titleView.frame.maxY + 2)
+@@ -507,6 +539,8 @@ private class AccountInfoView : GeneralContainableRowView {
+         if let statusControl = statusControl {
+             statusControl.setFrameOrigin(titleView.frame.maxX + 3, 3)
+         }
++        let cosmeticX = ((statusControl?.isHidden == false ? statusControl?.frame.maxX : nil) ?? titleView.frame.maxX) + 4
++        localCosmeticView.frame.origin = NSPoint(x: cosmeticX, y: h)
+         
+         actionView.centerY(x: containerView.frame.width - actionView.frame.width - 15)
+         photoVideoView?.frame = avatarView.frame
+--- a/packages/PeerInfoUI/Sources/PeerInfoUI/PeerInfoHeadItem.swift
++++ b/packages/PeerInfoUI/Sources/PeerInfoUI/PeerInfoHeadItem.swift
+@@ -1166,18 +1166,24 @@ private final class ExpandedAvatarShadeView: View {
+ 
+ private final class NameContainer : View {
+     let nameView = TextView()
++    private let localCosmeticView = NSTextField(labelWithString: "")
++    private let localCosmeticDisposable = MetaDisposable()
++    deinit { localCosmeticDisposable.dispose() }
+     var statusControl: PremiumStatusControl?
+     var leftStatusControl: PremiumStatusControl?
+     required init(frame frameRect: NSRect) {
+         super.init(frame: frameRect)
+         addSubview(nameView)
++        localCosmeticView.font = NSFont.systemFont(ofSize: 14, weight: .medium)
++        localCosmeticView.textColor = theme.colors.accent
++        localCosmeticView.setAccessibilityElement(true)
++        addSubview(localCosmeticView)
+         layer?.masksToBounds = false
+     }
+     
+     func update<Context: AccountContextProtocol>(_ item: PeerInfoHeadItem<Context>, animated: Bool) {
+         self.nameView.update(item.effectiveNameLayout)
+         let context = item.context
+-        
+         if let peer = item.peer {
+             let control = PremiumStatusControl.control(peer, account: item.context.account, inlinePacksContext: item.context.inlinePacksContext, left: false, isSelected: false, isBig: true, color: item.accentColor, cached: self.statusControl, animated: animated, autoupdate: !item.hideEmojiStatus)
+             if let control = control {
+@@ -1207,6 +1213,34 @@ private final class NameContainer : View {
+         }
+         
+         
++        if item.peer?.id == context.account.peerId {
++            localCosmeticDisposable.set((context.ayuLocalCosmetics() |> deliverOnMainQueue).start(next: { [weak self] cosmetic in
++                guard let self else { return }
++                guard let peer = item.peer else { return }
++                self.localCosmeticView.stringValue = cosmetic.decoration(realPremium: peer.isPremium)
++                self.localCosmeticView.setAccessibilityLabel(cosmetic.accessibilityDescription)
++                self.localCosmeticView.isHidden = self.localCosmeticView.stringValue.isEmpty
++                self.localCosmeticView.textColor = theme.colors.accent
++                self.localCosmeticView.sizeToFit()
++                if cosmetic.enabled, let rgb = cosmetic.profileColor {
++                    self.nameView.update(overlayTextLayout(item.effectiveNameLayout, color: NSColor(rgb: rgb)))
++                } else { self.nameView.update(item.effectiveNameLayout) }
++                let replaceStatus = cosmetic.enabled && cosmetic.emoji != nil && peer.emojiStatus != nil && !peer.isVerified && !peer.isScam && !peer.isFake
++                self.statusControl?.isHidden = replaceStatus
++                let visibleStatusWidth = replaceStatus ? (self.statusControl?.frame.width ?? 0) + 5 : 0
++                let extra = self.localCosmeticView.stringValue.isEmpty ? 0 : self.localCosmeticView.frame.width + 5
++                self.setFrameSize(NSSize(width: max(0, item.nameSize.width - visibleStatusWidth) + extra, height: item.nameSize.height))
++                self.superview?.needsLayout = true
++                self.needsLayout = true
++            }))
++        } else {
++            localCosmeticDisposable.set(nil)
++            statusControl?.isHidden = false
++            localCosmeticView.isHidden = true
++            localCosmeticView.stringValue = ""
++            localCosmeticView.sizeToFit()
++        }
++        
+         if let stateText = item.stateText, let control = statusControl, let peerId = item.peer?.id {
+             control.userInteractionEnabled = item.peer?.isScam == false && item.peer?.isFake == false
+             control.scaleOnClick = true
+@@ -1254,10 +1288,11 @@ private final class NameContainer : View {
+         }
+         nameView.centerY(x: offset)
+         var inset: CGFloat = nameView.frame.maxX + 5
+-        if let control = statusControl {
++        if let control = statusControl, !control.isHidden {
+             control.centerY(x: inset, addition: -1)
+             inset = control.frame.maxX + 8
+         }
++        localCosmeticView.frame.origin = NSPoint(x: inset, y: floor((bounds.height - localCosmeticView.frame.height) / 2))
+     }
+     
+     required init?(coder: NSCoder) {

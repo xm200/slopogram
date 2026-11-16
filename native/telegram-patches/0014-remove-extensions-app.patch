@@ -1,0 +1,23 @@
+--- a/Telegram.xcodeproj/project.pbxproj
++++ b/Telegram.xcodeproj/project.pbxproj
+@@ -3715,20 +3715,16 @@
+ 			isa = PBXNativeTarget;
+ 			buildConfigurationList = D098C7221D7E175A007784E4 /* Build configuration list for PBXNativeTarget "Telegram" */;
+ 			buildPhases = (
+-				C283C17922F10230C5D04880 /* Embed XPC Services */,
+ 				CE4D72C9B2A34D84A52D6A02 /* Check TelegramApi Sources */,
+ 				161B8B778DC5A90FA234F9E6 /* Check Wallet Engine Bindings */,
+ 				C20D5AB61DAA94500042616A /* Copy Files */,
+ 				D098C7121D7E175A007784E4 /* Frameworks */,
+ 				D098C7111D7E175A007784E4 /* Sources */,
+ 				D098C7131D7E175A007784E4 /* Resources */,
+-				27A35BDA2F03C7140001B63D /* CopyFiles */,
+ 			);
+ 			buildRules = (
+ 			);
+ 			dependencies = (
+-				4F3B0F64E65A2AC4EEC0B039 /* PBXTargetDependency */,
+-				275E4B3F2EEC24B700BC1A68 /* PBXTargetDependency */,
+ 			);
+ 			name = Telegram;
+ 			packageProductDependencies = (

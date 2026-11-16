@@ -1,0 +1,36 @@
+--- /dev/null
++++ b/packages/ChatUI/Sources/ChatUI/AyuDeletedProjection.swift
+@@ -0,0 +1,33 @@
++import Foundation
++
++import TelegramContext
++
++struct AyuMessageBoundary: Comparable {
++    let timestamp: Int64
++    let messageId: Int32
++    static func < (lhs: AyuMessageBoundary, rhs: AyuMessageBoundary) -> Bool {
++        (lhs.timestamp, lhs.messageId) < (rhs.timestamp, rhs.messageId)
++    }
++}
++
++struct AyuHistoryWindow {
++    let earliest: AyuMessageBoundary?
++    let latest: AyuMessageBoundary?
++    let hasEarlierGap: Bool
++    let hasLaterGap: Bool
++}
++
++func ayuProjectDeletedText(_ archive: [AyuRetainedText], chatId: Int64, liveIds: Set<Int32>, window: AyuHistoryWindow) -> [AyuRetainedText] {
++    var byId: [Int32: AyuRetainedText] = [:]
++    for item in archive where item.chatId == chatId && !item.text.isEmpty && !liveIds.contains(item.messageId) {
++        let boundary = AyuMessageBoundary(timestamp: item.timestamp, messageId: item.messageId)
++        if window.hasEarlierGap {
++            guard let earliest = window.earliest, boundary >= earliest else { continue }
++        }
++        if window.hasLaterGap {
++            guard let latest = window.latest, boundary <= latest else { continue }
++        }
++        if byId[item.messageId] == nil { byId[item.messageId] = item }
++    }
++    return byId.values.sorted { ($0.timestamp, $0.messageId) < ($1.timestamp, $1.messageId) }
++}

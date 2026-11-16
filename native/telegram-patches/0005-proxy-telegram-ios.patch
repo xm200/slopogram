@@ -1,0 +1,55 @@
+--- a/submodules/TelegramCore/Sources/Network/Network.swift
++++ b/submodules/TelegramCore/Sources/Network/Network.swift
+@@ -12,6 +12,24 @@
+ 
+ import EncryptionProvider
+ 
++public final class SlopogramProxyOverride {
++    private static let shared = SlopogramProxyOverride()
++    private let lock = NSLock()
++    private var server: ProxyServerSettings?
++
++    public static func set(_ server: ProxyServerSettings?) {
++        shared.lock.lock()
++        shared.server = server
++        shared.lock.unlock()
++    }
++
++    static func resolve(_ fallback: ProxyServerSettings?) -> ProxyServerSettings? {
++        shared.lock.lock()
++        defer { shared.lock.unlock() }
++        return shared.server ?? fallback
++    }
++}
++
+ public enum ConnectionStatus: Equatable {
+     case waitingForNetwork
+     case connecting(proxyAddress: String?, proxyHasConnectionIssues: Bool)
+@@ -550,7 +568,7 @@
+             apiEnvironment.disableUpdates = supplementary
+             apiEnvironment = apiEnvironment.withUpdatedLangPackCode(languageCode ?? "en")
+             
+-            if let effectiveActiveServer = proxySettings?.effectiveActiveServer {
++            if let effectiveActiveServer = SlopogramProxyOverride.resolve(proxySettings?.effectiveActiveServer) {
+                 apiEnvironment = apiEnvironment.withUpdatedSocksProxySettings(effectiveActiveServer.mtProxySettings)
+             }
+             
+@@ -600,7 +618,7 @@
+ 
+             let baseTcpConnectionInterfaceFactory = context.makeTcpConnectionInterface
+             let isAppExtension = Bundle.main.bundlePath.hasSuffix(".appex")
+-            let initialActiveServer = proxySettings?.effectiveActiveServer
++            let initialActiveServer = SlopogramProxyOverride.resolve(proxySettings?.effectiveActiveServer)
+             let initialWebProxyConfiguration = initialActiveServer?.webProxyConfiguration
+             WebProxyTransport.shared.apply(configuration: isAppExtension ? nil : initialWebProxyConfiguration)
+             if initialActiveServer?.isWebProxy == true {
+@@ -1178,7 +1196,8 @@
+         }))
+     }
+ 
+-    func updateProxySettings(_ activeServer: ProxyServerSettings?) {
++    func updateProxySettings(_ preference: ProxyServerSettings?) {
++        let activeServer = SlopogramProxyOverride.resolve(preference)
+         let webConfiguration = activeServer?.webProxyConfiguration
+         WebProxyTransport.shared.apply(configuration: self.isAppExtension ? nil : webConfiguration)
+         self.webProxyActive.set(activeServer?.isWebProxy == true)

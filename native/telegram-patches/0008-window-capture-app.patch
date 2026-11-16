@@ -1,0 +1,18 @@
+--- a/packages/TGUIKit/Sources/Window.swift
++++ b/packages/TGUIKit/Sources/Window.swift
+@@ -1066,11 +1066,12 @@
+     }
+     
+     public func windowImageShot() -> CGImage? {
+-        if windowNumber >= 0 {
+-            return CGWindowListCreateImage(CGRect.null, [.optionIncludingWindow], CGWindowID(windowNumber), [.boundsIgnoreFraming])
+-        } else {
++        guard Thread.isMainThread, let contentView = self.contentView, !contentView.bounds.isEmpty,
++              let bitmap = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds) else {
+             return nil
+         }
++        contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
++        return bitmap.cgImage
+     }
+ 
+ 

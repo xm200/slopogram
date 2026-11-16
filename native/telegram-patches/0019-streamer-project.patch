@@ -1,0 +1,34 @@
+--- a/Telegram.xcodeproj/project.pbxproj
++++ b/Telegram.xcodeproj/project.pbxproj
+@@ -7,6 +7,7 @@
+ 	objects = {
+ 
+ /* Begin PBXBuildFile section */
++		A71A00000000000000000006 /* SlopogramStreamerMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71A00000000000000000007 /* SlopogramStreamerMode.swift */; };
+ 		A71A00000000000000000004 /* AyuAccountRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71A00000000000000000005 /* AyuAccountRuntime.swift */; };
+ 		A71A00000000000000000001 /* SlopogramAyu in Frameworks */ = {isa = PBXBuildFile; productRef = A71A00000000000000000002 /* SlopogramAyu */; };
+ 		179E9277EEDF6EE57D278A28 /* MTProtoRustEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 65444FEC9F6C1C634AC14116 /* MTProtoRustEngine */; };
+@@ -1054,6 +1055,7 @@
+ /* End PBXCopyFilesBuildPhase section */
+ 
+ /* Begin PBXFileReference section */
++		A71A00000000000000000007 /* SlopogramStreamerMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlopogramStreamerMode.swift; sourceTree = "<group>"; };
+ 		A71A00000000000000000005 /* AyuAccountRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AyuAccountRuntime.swift; sourceTree = "<group>"; };
+ 		FD784E303A88B94212763B13 /* MTProtoRustEngine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MTProtoRustEngine; path = "submodules/telegram-ios/submodules/MTProtoRustEngine"; sourceTree = "<group>"; };
+ 		00AE230B300112A4002DAD5B /* menu_article.tgs */ = {isa = PBXFileReference; lastKnownFileType = file; path = menu_article.tgs; sourceTree = "<group>"; };
+@@ -3006,6 +3008,7 @@
+ 			children = (
+ 				9F7D422922240403007B68BB /* AccountContext.swift */,
+ 				A71A00000000000000000005 /* AyuAccountRuntime.swift */,
++				A71A00000000000000000007 /* SlopogramStreamerMode.swift */,
+ 				726D2C319EBD3AB2BA2C237F /* AccountManagerSetup.swift */,
+ 				E64BED76F5F0416925F8157C /* AccountContextConformance.swift */,
+ 				9F7D422B222415C9007B68BB /* SharedAccountContext.swift */,
+@@ -4787,6 +4790,7 @@
+ 				C250B01A1DB66B44004E9FBE /* InAppLinks.swift in Sources */,
+ 				9F7D422A22240404007B68BB /* AccountContext.swift in Sources */,
+ 				A71A00000000000000000004 /* AyuAccountRuntime.swift in Sources */,
++				A71A00000000000000000006 /* SlopogramStreamerMode.swift in Sources */,
+ 				9F147F7C2231543800D71BD1 /* PeerUtils.swift in Sources */,
+ 				C24949141E5B763F00D7ED5D /* ApplicationContext.swift in Sources */,
+ 				2728991926CBC0D100F4D288 /* UNUserNotifications.swift in Sources */,

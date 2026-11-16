@@ -1,0 +1,16 @@
+--- a/packages/GalleryUI/Sources/GalleryUI/VideoPlayerLab.swift
++++ b/packages/GalleryUI/Sources/GalleryUI/VideoPlayerLab.swift
+@@ -1134,9 +1134,12 @@
+     }
+ 
+     fileprivate func captureLabWindow(_ window: NSWindow, name: String) {
+-        guard let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]) else {
++        guard Thread.isMainThread, let contentView = window.contentView, !contentView.bounds.isEmpty,
++              let bitmap = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds) else {
+             return
+         }
++        contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
++        guard let image = bitmap.cgImage else { return }
+         let width = image.width
+         let height = image.height
+         var bytes = [UInt8](repeating: 0, count: width * height * 4)

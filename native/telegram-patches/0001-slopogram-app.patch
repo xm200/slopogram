@@ -1,0 +1,209 @@
+diff --git a/Telegram-Mac/account/AccountManagerSetup.swift b/Telegram-Mac/account/AccountManagerSetup.swift
+index 1db45f75..8670ebf0 100644
+--- a/Telegram-Mac/account/AccountManagerSetup.swift
++++ b/Telegram-Mac/account/AccountManagerSetup.swift
+@@ -53,9 +53,6 @@ func makeAccountManagerAccessChallenge(basePath: String, isTemporary: Bool, isRe
+         _ = try PasscodeEnvironment.shared.sharedAccessGroup()
+         PasscodeCredentialStore.shared.configureLock(directory: basePath)
+         #if !SHARE
+-        if isMainProcess && !isTemporary && !isReadOnly {
+-            migrateWalletKeychainScopeIfNeeded(basePath: basePath, isFreshInstallation: isFreshInstallation)
+-        }
+         if isMainProcess && !isTemporary && !isReadOnly && isFreshInstallation {
+             try resetWalletLocalSecrets()
+         }
+diff --git a/Telegram-Mac/app/AppDelegate.swift b/Telegram-Mac/app/AppDelegate.swift
+index 04521bc1..0c0c5191 100644
+--- a/Telegram-Mac/app/AppDelegate.swift
++++ b/Telegram-Mac/app/AppDelegate.swift
+@@ -399,7 +399,8 @@ class AppDelegate: NSResponder, NSApplicationDelegate, NSUserNotificationCenterD
+         
+         self.containerUrl = containerUrl.path
+ 
+-        try! PasscodeEnvironment.shared.configure(PasscodeConfiguration(appGroupIdentifier: ApiEnvironment.group, processRole: .mainApp, biometricKeychainService: walletBiometricKeychainService, keychainScope: ApiEnvironment.prefix == "debug" ? "debug" : nil), privateAccessGroup: { ApiEnvironment.group })
++        guard let keychainScope = SlopogramExternalConfiguration.keychainScope, let biometricService = SlopogramExternalConfiguration.biometricKeychainService else { return }
++        try! PasscodeEnvironment.shared.configure(PasscodeConfiguration(appGroupIdentifier: ApiEnvironment.group, processRole: .mainApp, biometricKeychainService: biometricService, keychainScope: keychainScope), privateAccessGroup: { ApiEnvironment.group })
+         
+         TempBox.initializeShared(basePath: self.containerUrl, processType: "app", launchSpecificId: arc4random64())
+         
+diff --git a/Telegram-Mac/updater/AppUpdateViewController.swift b/Telegram-Mac/updater/AppUpdateViewController.swift
+index 83ec9f81..e96270ca 100644
+--- a/Telegram-Mac/updater/AppUpdateViewController.swift
++++ b/Telegram-Mac/updater/AppUpdateViewController.swift
+@@ -755,34 +755,7 @@ private func cancelStagedUpdate() {
+     staged.abortUpdate()
+ }
+ 
+-private func resetUpdater() {
+-    
+-    #if !GITHUB
+-        let update:()->Void = {
+-            let state = stateValue.with { $0.loadingState }
+-            switch state {
+-            case .readyToInstall:
+-                stageNewerUpdate()
+-            case .installing, .unarchiving, .loading:
+-                break
+-            default:
+-                driver?.checkForUpdates(at: updateFeedURL, host: host, domain: updater.host)
+-            }
+-        }
+-    
+-    
+-        let signal: Signal<Never, NoError> = Signal { subscriber in
+-            update()
+-            subscriber.putCompletion()
+-            return EmptyDisposable
+-            } |> delay(20 * 60, queue: .mainQueue()) |> restart
+-        disposable.set(signal.start())
+-    
+-        update()
+-    #endif
+-    
+-   
+-}
++private func resetUpdater() {}
+ 
+ private var updaterSource: UpdaterSource? = nil
+ 
+diff --git a/Telegram.xcodeproj/project.pbxproj b/Telegram.xcodeproj/project.pbxproj
+index 1010e354..1b035c54 100644
+--- a/Telegram.xcodeproj/project.pbxproj
++++ b/Telegram.xcodeproj/project.pbxproj
+@@ -7,6 +7,10 @@
+ 	objects = {
+ 
+ /* Begin PBXBuildFile section */
++		A71A00000000000000000008 /* SlopogramSystemEnergy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71A00000000000000000009 /* SlopogramSystemEnergy.swift */; };
++		A71A00000000000000000006 /* SlopogramStreamerMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71A00000000000000000007 /* SlopogramStreamerMode.swift */; };
++		A71A00000000000000000004 /* AyuAccountRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71A00000000000000000005 /* AyuAccountRuntime.swift */; };
++		A71A00000000000000000001 /* SlopogramAyu in Frameworks */ = {isa = PBXBuildFile; productRef = A71A00000000000000000002 /* SlopogramAyu */; };
+ 		179E9277EEDF6EE57D278A28 /* MTProtoRustEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 65444FEC9F6C1C634AC14116 /* MTProtoRustEngine */; };
+ 		00AE230C300112A4002DAD5B /* menu_article.tgs in Resources */ = {isa = PBXBuildFile; fileRef = 00AE230B300112A4002DAD5B /* menu_article.tgs */; };
+ 		714DAA74A82E31CED3FF114A /* menu_message.tgs in Resources */ = {isa = PBXBuildFile; fileRef = 6DF2B389CBB80EB29FD391E4 /* menu_message.tgs */; };
+@@ -1052,6 +1056,9 @@
+ /* End PBXCopyFilesBuildPhase section */
+ 
+ /* Begin PBXFileReference section */
++		A71A00000000000000000009 /* SlopogramSystemEnergy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlopogramSystemEnergy.swift; sourceTree = "<group>"; };
++		A71A00000000000000000007 /* SlopogramStreamerMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlopogramStreamerMode.swift; sourceTree = "<group>"; };
++		A71A00000000000000000005 /* AyuAccountRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AyuAccountRuntime.swift; sourceTree = "<group>"; };
+ 		FD784E303A88B94212763B13 /* MTProtoRustEngine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MTProtoRustEngine; path = "submodules/telegram-ios/submodules/MTProtoRustEngine"; sourceTree = "<group>"; };
+ 		00AE230B300112A4002DAD5B /* menu_article.tgs */ = {isa = PBXFileReference; lastKnownFileType = file; path = menu_article.tgs; sourceTree = "<group>"; };
+ 		6DF2B389CBB80EB29FD391E4 /* menu_message.tgs */ = {isa = PBXFileReference; lastKnownFileType = file; path = menu_message.tgs; sourceTree = "<group>"; };
+@@ -2196,6 +2203,7 @@
+ 				48FE28EECDE540AC8773E5E2 /* FolderSharingUI in Frameworks */,
+ 				9FEBEAF7BE0542B495A9F3ED /* SidebarUI in Frameworks */,
+ 				A9C15C11EF1D92CB50C3C49E /* AvatarUI in Frameworks */,
++				A71A00000000000000000001 /* SlopogramAyu in Frameworks */,
+ 				115A779A1DD7AE0D71E2AB8A /* ComponentsUI in Frameworks */,
+ 				8B4F9CAD44047EBA728F85DC /* CubeUI in Frameworks */,
+ 				A1C4E2F09B7D4A6E81530C11 /* ImageCanvasUI in Frameworks */,
+@@ -3001,6 +3009,9 @@
+ 			isa = PBXGroup;
+ 			children = (
+ 				9F7D422922240403007B68BB /* AccountContext.swift */,
++				A71A00000000000000000005 /* AyuAccountRuntime.swift */,
++				A71A00000000000000000009 /* SlopogramSystemEnergy.swift */,
++				A71A00000000000000000007 /* SlopogramStreamerMode.swift */,
+ 				726D2C319EBD3AB2BA2C237F /* AccountManagerSetup.swift */,
+ 				E64BED76F5F0416925F8157C /* AccountContextConformance.swift */,
+ 				9F7D422B222415C9007B68BB /* SharedAccountContext.swift */,
+@@ -3710,23 +3721,20 @@
+ 			isa = PBXNativeTarget;
+ 			buildConfigurationList = D098C7221D7E175A007784E4 /* Build configuration list for PBXNativeTarget "Telegram" */;
+ 			buildPhases = (
+-				C283C17922F10230C5D04880 /* Embed XPC Services */,
+ 				CE4D72C9B2A34D84A52D6A02 /* Check TelegramApi Sources */,
+ 				161B8B778DC5A90FA234F9E6 /* Check Wallet Engine Bindings */,
+ 				C20D5AB61DAA94500042616A /* Copy Files */,
+ 				D098C7121D7E175A007784E4 /* Frameworks */,
+ 				D098C7111D7E175A007784E4 /* Sources */,
+ 				D098C7131D7E175A007784E4 /* Resources */,
+-				27A35BDA2F03C7140001B63D /* CopyFiles */,
+ 			);
+ 			buildRules = (
+ 			);
+ 			dependencies = (
+-				4F3B0F64E65A2AC4EEC0B039 /* PBXTargetDependency */,
+-				275E4B3F2EEC24B700BC1A68 /* PBXTargetDependency */,
+ 			);
+ 			name = Telegram;
+ 			packageProductDependencies = (
++				A71A00000000000000000002 /* SlopogramAyu */,
+ 				44ADA01DFCFE7374EA00FD45 /* WidgetEngineXPC */,
+ 				65444FEC9F6C1C634AC14116 /* MTProtoRustEngine */,
+ 				C0C39F69D94F71B3D37CE102 /* PasscodeCore */,
+@@ -4004,6 +4012,7 @@
+ 			);
+ 			mainGroup = D098C70C1D7E175A007784E4;
+ 			packageReferences = (
++				A71A00000000000000000003 /* XCLocalSwiftPackageReference "../ayu" */,
+ 				8412CCD8FD1ED53B957DC5A9 /* XCLocalSwiftPackageReference "packages/AvatarUI" */,
+ 				F0255D56305311A9001994C2 /* XCLocalSwiftPackageReference "packages/TelegramUtils" */,
+ 			);
+@@ -4783,6 +4792,9 @@
+ 				9F0F8E82226DCD1C00A97F6A /* OpmizeDatabaseView.swift in Sources */,
+ 				C250B01A1DB66B44004E9FBE /* InAppLinks.swift in Sources */,
+ 				9F7D422A22240404007B68BB /* AccountContext.swift in Sources */,
++				A71A00000000000000000004 /* AyuAccountRuntime.swift in Sources */,
++				A71A00000000000000000008 /* SlopogramSystemEnergy.swift in Sources */,
++				A71A00000000000000000006 /* SlopogramStreamerMode.swift in Sources */,
+ 				9F147F7C2231543800D71BD1 /* PeerUtils.swift in Sources */,
+ 				C24949141E5B763F00D7ED5D /* ApplicationContext.swift in Sources */,
+ 				2728991926CBC0D100F4D288 /* UNUserNotifications.swift in Sources */,
+@@ -4982,7 +4994,7 @@
+ 				OTHER_CODE_SIGN_FLAGS = "";
+ 				OTHER_LDFLAGS = "-ObjC";
+ 				OTHER_SWIFT_FLAGS = "$(inherited)";
+-				PRODUCT_BUNDLE_IDENTIFIER = ru.keepcoder.Telegram;
++				PRODUCT_BUNDLE_IDENTIFIER = one.slopogram.Slopogram.Native;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				PROVISIONING_PROFILE_SPECIFIER = "";
+ 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = PRODUCTION;
+@@ -5208,7 +5220,7 @@
+ 				OTHER_CODE_SIGN_FLAGS = "";
+ 				OTHER_LDFLAGS = "-ObjC";
+ 				OTHER_SWIFT_FLAGS = "$(inherited)";
+-				PRODUCT_BUNDLE_IDENTIFIER = ru.keepcoder.Telegram;
++				PRODUCT_BUNDLE_IDENTIFIER = one.slopogram.Slopogram.Native;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				PROVISIONING_PROFILE_SPECIFIER = "";
+ 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+@@ -5325,6 +5337,7 @@
+ /* End XCConfigurationList section */
+ 
+ /* Begin XCLocalSwiftPackageReference section */
++		A71A00000000000000000003 /* XCLocalSwiftPackageReference "../ayu" */ = {isa = XCLocalSwiftPackageReference; relativePath = ../ayu; };
+ 		8412CCD8FD1ED53B957DC5A9 /* XCLocalSwiftPackageReference "packages/AvatarUI" */ = {
+ 			isa = XCLocalSwiftPackageReference;
+ 			relativePath = packages/AvatarUI;
+@@ -5336,6 +5349,7 @@
+ /* End XCLocalSwiftPackageReference section */
+ 
+ /* Begin XCSwiftPackageProductDependency section */
++		A71A00000000000000000002 /* SlopogramAyu */ = {isa = XCSwiftPackageProductDependency; package = A71A00000000000000000003 /* XCLocalSwiftPackageReference "../ayu" */; productName = SlopogramAyu; };
+ 		65444FEC9F6C1C634AC14116 /* MTProtoRustEngine */ = {
+ 			isa = XCSwiftPackageProductDependency;
+ 			productName = MTProtoRustEngine;
+diff --git a/packages/AppAnalytics/Sources/AppAnalytics/Analytics.swift b/packages/AppAnalytics/Sources/AppAnalytics/Analytics.swift
+index c6e82aaa..c15ed907 100644
+--- a/packages/AppAnalytics/Sources/AppAnalytics/Analytics.swift
++++ b/packages/AppAnalytics/Sources/AppAnalytics/Analytics.swift
+@@ -23,6 +23,7 @@ public final class Analytics {
+         self.clock = clock
+         self.screens = AnalyticsScreenTracker(clock: clock)
+         self.screens.analytics = self
++        policy.isEnabled = false
+         policy.didRevoke = { [weak self] in
+             self?.appLogContext?.invalidate()
+             self?.appLogContext = nil
+@@ -58,7 +59,7 @@ public final class Analytics {
+ 
+     public var isEnabled: Bool {
+         get { policy.isEnabled }
+-        set { policy.isEnabled = newValue }
++        set { policy.isEnabled = false }
+     }
+ 
+     func setSink(_ sink: Sink?, owner: AnyObject?) {

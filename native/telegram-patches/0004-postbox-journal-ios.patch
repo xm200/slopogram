@@ -1,0 +1,94 @@
+diff --git a/submodules/Postbox/Sources/Postbox.swift b/submodules/Postbox/Sources/Postbox.swift
+index 72585b3..0635271 100644
+--- a/submodules/Postbox/Sources/Postbox.swift
++++ b/submodules/Postbox/Sources/Postbox.swift
+@@ -1901,6 +1901,7 @@ final class PostboxImpl {
+     private var currentNeedsReindexUnreadCounters: Bool = false
+     
+     private let statePipe: ValuePipe<PostboxCoding> = ValuePipe()
++    private let committedMessageVersionSubscribers = Bag<([Message]) -> Void>()
+     private var masterClientId = Promise<Int64>()
+     
+     private var sessionClientId: Int64 = {
+@@ -2316,6 +2317,13 @@ final class PostboxImpl {
+     }
+     
+     fileprivate func addMessages(transaction: Transaction, messages: [StoreMessage], location: AddMessagesLocation) -> [Int64: MessageId] {
++        let trackVersions = !self.committedMessageVersionSubscribers.isEmpty
++        var previousVersions: [MessageId: Message] = [:]
++        if trackVersions {
++            for message in messages {
++                if case let .Id(id) = message.id, let old = transaction.getMessage(id) { previousVersions[id] = old }
++            }
++        }
+         var addedMessagesByPeerId: [PeerId: [StoreMessage]] = [:]
+         let addResult = self.messageHistoryTable.addMessages(messages: messages, operationsByPeerId: &self.currentOperationsByPeerId, updatedMedia: &self.currentUpdatedMedia, unsentMessageOperations: &currentUnsentOperations, updatedPeerReadStateOperations: &self.currentUpdatedSynchronizeReadStateOperations, globalTagsOperations: &self.currentGlobalTagsOperations, pendingActionsOperations: &self.currentPendingMessageActionsOperations, updatedMessageActionsSummaries: &self.currentUpdatedMessageActionsSummaries, updatedMessageTagSummaries: &self.currentUpdatedMessageTagSummaries, invalidateMessageTagSummaries: &self.currentInvalidateMessageTagSummaries, localTagsOperations: &self.currentLocalTagsOperations, timestampBasedMessageAttributesOperations: &self.currentTimestampBasedMessageAttributesOperations, processMessages: { messagesByPeerId in
+             addedMessagesByPeerId = messagesByPeerId
+@@ -2356,8 +2364,36 @@ final class PostboxImpl {
+             }
+         }
+         
++        if trackVersions {
++            var versions: [Message] = []
++            for message in messages {
++                guard case let .Id(id) = message.id, let current = transaction.getMessage(id) else { continue }
++                let old = previousVersions[id]
++                if old?.text != current.text {
++                    if let old, !old.text.isEmpty { versions.append(old) }
++                    if !current.text.isEmpty || old != nil { versions.append(current) }
++                }
++            }
++            self.emitCommittedMessageVersions(versions, transaction: transaction)
++        }
+         return addResult
+     }
++
++    private func emitCommittedMessageVersions(_ messages: [Message], transaction: Transaction) {
++        guard !messages.isEmpty else { return }
++        transaction.afterCommit { [weak self] in
++            guard let self else { return }
++            for callback in self.committedMessageVersionSubscribers.copyItems() { callback(messages) }
++        }
++    }
++
++    fileprivate func subscribeCommittedMessageVersions(_ callback: @escaping ([Message]) -> Void) -> Disposable {
++        let index = self.committedMessageVersionSubscribers.add(callback)
++        return ActionDisposable { [weak self] in
++            guard let self else { return }
++            self.queue.async { [weak self] in self?.committedMessageVersionSubscribers.remove(index) }
++        }
++    }
+     
+     fileprivate func countIncomingMessage(id: MessageId) {
+         let (combinedState, _) = self.readStateTable.addIncomingMessages(id.peerId, indices: Set([MessageIndex(id: id, timestamp: 1)]))
+@@ -3204,6 +3240,13 @@ final class PostboxImpl {
+             if case let .update(updatedMessage) = update(message) {
+                 self.messageHistoryTable.updateMessage(id, message: updatedMessage, operationsByPeerId: &self.currentOperationsByPeerId, updatedMedia: &self.currentUpdatedMedia, unsentMessageOperations: &self.currentUnsentOperations, updatedPeerReadStateOperations: &self.currentUpdatedSynchronizeReadStateOperations, globalTagsOperations: &self.currentGlobalTagsOperations, pendingActionsOperations: &self.currentPendingMessageActionsOperations, updatedMessageActionsSummaries: &self.currentUpdatedMessageActionsSummaries, updatedMessageTagSummaries: &self.currentUpdatedMessageTagSummaries, invalidateMessageTagSummaries: &self.currentInvalidateMessageTagSummaries, localTagsOperations: &self.currentLocalTagsOperations, timestampBasedMessageAttributesOperations: &self.currentTimestampBasedMessageAttributesOperations)
+                 
++                if !self.committedMessageVersionSubscribers.isEmpty, let current = transaction.getMessage(id), message.text != current.text {
++                    var versions: [Message] = []
++                    if !message.text.isEmpty { versions.append(message) }
++                    versions.append(current)
++                    self.emitCommittedMessageVersions(versions, transaction: transaction)
++                }
++
+                 if let bag = self.installedStoreOrUpdateMessageActionsByPeerId[id.peerId] {
+                     for f in bag.copyItems() {
+                         f.addOrUpdate(messages: [updatedMessage], transaction: transaction)
+@@ -4857,6 +4900,16 @@ public class Postbox {
+         })
+     }
+ 
++    public func committedMessageVersions() -> Signal<[Message], NoError> {
++        return Signal { subscriber in
++            let disposable = MetaDisposable()
++            self.impl.with { impl in
++                disposable.set(impl.subscribeCommittedMessageVersions { messages in subscriber.putNext(messages) })
++            }
++            return disposable
++        }
++    }
++
+     public func keychainEntryForKey(_ key: String) -> Data? {
+         return self.impl.syncWith { impl -> Data? in
+             return impl.keychainEntryForKey(key)

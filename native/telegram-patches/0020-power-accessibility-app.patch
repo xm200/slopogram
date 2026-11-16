@@ -1,0 +1,63 @@
+--- a/Telegram-Mac/account/SharedAccountContext.swift
++++ b/Telegram-Mac/account/SharedAccountContext.swift
+@@ -58,6 +58,11 @@
+             current ?? DevicesContext(accountManager)
+         }!
+     }
++    private let systemLowPower = Atomic(value: ProcessInfo.processInfo.isLowPowerModeEnabled)
++    private let systemReduceMotion = Atomic(value: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
++    private let systemReduceTransparency = Atomic(value: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency)
++    private var systemPowerObserver: NSObjectProtocol?
++    private var accessibilityObserver: NSObjectProtocol?
+     private let _baseSettings: Atomic<BaseApplicationSettings> = Atomic(value: BaseApplicationSettings.defaultSettings)
+     
+     var baseSettings: BaseApplicationSettings {
+@@ -70,6 +75,7 @@
+     
+    
+     func isLite(_ key: LiteModeKey = .any) -> Bool {
++        if slopogramSystemLite(key, lowPower: systemLowPower.with { $0 }, reduceMotion: systemReduceMotion.with { $0 }, reduceTransparency: systemReduceTransparency.with { $0 }) { return true }
+         let mode = baseSettings.liteMode
+         if mode.enabled {
+             return true
+@@ -256,6 +262,18 @@
+         self.displayUpgradeProgress = displayUpgradeProgress
+         self.appEncryption = Atomic(value: appEncryption)
+         #if !SHARE
++        self.systemPowerObserver = NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { [weak self] _ in
++            guard let self else { return }
++            _ = self.systemLowPower.swap(ProcessInfo.processInfo.isLowPowerModeEnabled)
++            self.syncLiquidGlassWithLite()
++        }
++        self.accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
++            guard let self else { return }
++            _ = self.systemReduceMotion.swap(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
++            _ = self.systemReduceTransparency.swap(NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency)
++            self.syncLiquidGlassWithLite()
++        }
++        self.syncLiquidGlassWithLite()
+         self.accountManager.mediaBox.fetchCachedResourceRepresentation = { (resource, representation) -> Signal<CachedMediaResourceRepresentationResult, NoError> in
+             return fetchCachedSharedResourceRepresentation(accountManager: accountManager, resource: resource, representation: representation)
+         }
+@@ -810,6 +828,10 @@
+     #endif
+     
+     deinit {
++        #if !SHARE
++        if let systemPowerObserver { NotificationCenter.default.removeObserver(systemPowerObserver) }
++        if let accessibilityObserver { NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver) }
++        #endif
+         batteryLevelTimer?.invalidate()
+     }
+     
+--- /dev/null
++++ b/Telegram-Mac/account/SlopogramSystemEnergy.swift
+@@ -0,0 +1,8 @@
++import InAppSettings
++
++func slopogramSystemLite(_ key: LiteModeKey, lowPower: Bool, reduceMotion: Bool, reduceTransparency: Bool) -> Bool {
++    if lowPower { return true }
++    if reduceTransparency && (key == .blur || key == .liquidGlass) { return true }
++    if reduceMotion && [.animations, .menu_animations, .emoji_effects, .dynamic_background, .stickers, .gif, .video].contains(key) { return true }
++    return false
++}

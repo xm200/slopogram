@@ -1,0 +1,20 @@
+[package]
+name = "slopogram-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[dependencies]
+slopogram-client = { path = "../client" }
+slopogram-core.workspace = true
+slopogram-telegram.workspace = true
+directories.workspace = true
+uniffi = { version = "0.32.2", features = ["cli"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin.rs"

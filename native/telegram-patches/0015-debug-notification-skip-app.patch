@@ -1,0 +1,15 @@
+--- a/Telegram-Mac/utils/UNUserNotifications.swift
++++ b/Telegram-Mac/utils/UNUserNotifications.swift
+@@ -36,6 +36,12 @@
+     }
+     static var _current:UNUserNotifications?
+     static func initialize(manager: SharedNotificationManager) {
++        #if DEBUG
++        if ProcessInfo.processInfo.environment["SLOPOGRAM_SKIP_NOTIFICATIONS"] == "1" {
++            _current = nil
++            return
++        }
++        #endif
+         if #available(macOS 10.14, *) {
+             _current = UNUserNotificationsNew(manager: manager)
+         } else {
