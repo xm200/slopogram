@@ -18,6 +18,7 @@ trap cleanup EXIT
 mkdir "$WORK/stage" "$WORK/mount"
 ditto --noextattr --norsrc "$APP" "$WORK/stage/Slopogram Native.app"
 ln -s /Applications "$WORK/stage/Applications"
+cp "$ROOT/.env.example" "$WORK/stage/Slopogram.env.example"
 hdiutil create -quiet -volname Slopogram -srcfolder "$WORK/stage" -format UDZO "$WORK/candidate.dmg"
 hdiutil verify "$WORK/candidate.dmg" >/dev/null
 hdiutil attach -readonly -nobrowse -mountpoint "$WORK/mount" "$WORK/candidate.dmg" >/dev/null
@@ -30,11 +31,18 @@ import hashlib, os, stat, subprocess, sys
 from pathlib import Path
 
 source, mounted, volume = map(Path, sys.argv[1:])
+private_names = {'.env', 'tdata', 'key_datas', 'postbox', 'db.sqlite', 'db.sqlite-wal', 'db.sqlite-shm'}
+if any(p.name.lower() in private_names or p.name.lower().endswith('.session') for p in mounted.rglob('*')):
+    raise SystemExit('Found a private configuration or account data path in the packaged app.')
 entries = {p.name for p in volume.iterdir()}
-expected = {'Slopogram Native.app', 'Applications'}
+expected = {'Slopogram Native.app', 'Applications', 'Slopogram.env.example'}
 if entries != expected:
     raise SystemExit(f'Unexpected image-root entries: {sorted(entries - expected)}; missing: {sorted(expected - entries)}')
-print('Image root contains exactly the app and Applications link; no hidden entries.')
+template = (volume / 'Slopogram.env.example').read_text().splitlines()
+assignments = [line.strip() for line in template if line.strip() and not line.lstrip().startswith('#')]
+if assignments != ['TELEGRAM_API_ID=', 'TELEGRAM_API_HASH=']:
+    raise SystemExit('The release configuration template must contain only empty API settings.')
+print('Verified image root and blank configuration template.')
 # The OS adds provenance metadata to copied/mounted files. Inspect attribute
 # names only, never values; reject Finder metadata, resource forks, or extras.
 attributes = subprocess.run(['xattr', '-r', str(volume)], check=True, capture_output=True, text=True).stdout.splitlines()

@@ -4,12 +4,19 @@ import SystemConfiguration
 import Darwin
 
 public enum SlopogramExternalConfiguration {
+    static func candidates(explicit: String?, home: URL, currentDirectory: URL, executable: URL) -> [URL] {
+        if let explicit { return [URL(fileURLWithPath: explicit)] }
+        return [home.appendingPathComponent("Library/Application Support/Slopogram Native/.env"),
+                currentDirectory.appendingPathComponent(".env"),
+                executable.deletingLastPathComponent().appendingPathComponent(".env"),
+                executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".env")]
+    }
     private static let loaded: (values: [String: String], error: String?) = {
         let env = ProcessInfo.processInfo.environment
         let explicit = env["SLOPOGRAM_CONFIG_FILE"]
         let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let candidates = explicit.map { [URL(fileURLWithPath: $0)] } ?? [URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".env"), executable.deletingLastPathComponent().appendingPathComponent(".env"), executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".env"), repository.appendingPathComponent(".env")]
+        let candidates = Self.candidates(explicit: explicit, home: FileManager.default.homeDirectoryForCurrentUser,
+                                    currentDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath), executable: executable)
         var values: [String: String] = [:]
         if let file = candidates.first(where: { explicit != nil || FileManager.default.fileExists(atPath: $0.path) }) {
             guard let text = try? String(contentsOf: file, encoding: .utf8) else { return (env, "Could not read the configuration file at \(file.path).") }

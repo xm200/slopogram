@@ -17,7 +17,7 @@
  import ColorPalette
  import WebKit
  import CodeSyntax
-@@ -308,6 +313,263 @@
+@@ -308,6 +313,286 @@
      
      var baseAppBundleId: String {
          return  Bundle.main.bundleIdentifier!
@@ -171,14 +171,44 @@
 +        return result
 +    }
 +
++    nonisolated static func slopogramReadTheme(_ url: URL) async throws -> (palette: ColorPalette, poster: Data?, tiled: Bool, clip: Data?, warning: String?) {
++        let text: String
++        let poster: Data?
++        let clip: Data?
++        let tiled: Bool
++        let warning: String?
++        switch url.pathExtension.lowercased() {
++        case "palette":
++            guard let palette = importPalette(url.path) else { throw SlopogramThemeImportError.invalidPalette }
++            return (palette, try slopogramPaletteWallpaper(url), false, nil, nil)
++        case "mp4":
++            let source = try await prepareVideoThemeSource(url: url)
++            text = makeVideoThemePalette(name: url.deletingPathExtension().lastPathComponent, samples: source.samples)
++            (poster, clip, tiled, warning) = (source.poster, source.video, false, nil)
++        case "tdesktop-theme":
++            let decoded = try await decodeDesktopTheme(path: url.path)
++            text = decoded.palette
++            (poster, clip, tiled, warning) = (decoded.wallpaper, decoded.video, decoded.wallpaperTiled, decoded.videoWarning)
++        default:
++            throw SlopogramThemeImportError.invalidPalette
++        }
++        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let paletteURL = directory.appendingPathComponent("theme.palette")
++        try text.write(to: paletteURL, atomically: true, encoding: .utf8)
++        guard let palette = importPalette(paletteURL.path) else { throw SlopogramThemeImportError.invalidPalette }
++        return (palette, poster, tiled, clip, warning)
++    }
++
 +    @objc func slopogramImportTheme(_ sender: Any?) {
 +        guard !slopogramThemeImportInProgress, !SlopogramStreamerMode.isActive, let context = self.currentContext else { NSSound.beep(); return }
 +        slopogramThemeImportInProgress = true
 +        let finish = { self.slopogramThemeImportInProgress = false }
 +        let panel = NSOpenPanel()
 +        panel.title = "Import Theme"
-+        panel.message = "Choose a Telegram Desktop .tdesktop-theme or macOS .palette file."
-+        panel.allowedFileTypes = ["palette", "tdesktop-theme"]
++        panel.message = "Choose a theme, or select an MP4 to create one from its colors and first frame."
++        panel.allowedFileTypes = ["palette", "tdesktop-theme", "mp4"]
 +        panel.allowsMultipleSelection = false
 +        panel.canChooseDirectories = false
 +        panel.beginSheetModal(for: context.window) { [weak self] response in
@@ -188,19 +218,8 @@
 +            Task { @MainActor in
 +                defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
 +                do {
-+                    let prepared: (palette: ColorPalette, poster: Data?, tiled: Bool, clip: Data?, warning: String?) = try await Task.detached(priority: .userInitiated) {
-+                        if url.pathExtension.lowercased() == "palette" {
-+                            guard let palette = importPalette(url.path) else { throw SlopogramThemeImportError.invalidPalette }
-+                            return (palette, try Self.slopogramPaletteWallpaper(url), false, nil, nil)
-+                        }
-+                        let decoded = try await decodeDesktopTheme(path: url.path)
-+                        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-+                        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-+                        defer { try? FileManager.default.removeItem(at: directory) }
-+                        let paletteURL = directory.appendingPathComponent("theme.palette")
-+                        try decoded.palette.write(to: paletteURL, atomically: true, encoding: .utf8)
-+                        guard let palette = importPalette(paletteURL.path) else { throw SlopogramThemeImportError.invalidPalette }
-+                        return (palette, decoded.wallpaper.map { Data($0) }, decoded.wallpaperTiled, decoded.video.map { Data($0) }, decoded.videoWarning)
++                    let prepared = try await Task.detached(priority: .userInitiated) {
++                        try await Self.slopogramReadTheme(url)
 +                    }.value
 +                    guard !SlopogramStreamerMode.isActive, self.currentContext === context else { finish(); return }
 +                    let (palette, wallpaperBytes, tiled, videoBytes, videoWarning) = prepared
@@ -273,7 +292,11 @@
 +                    guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
 +                    let alert = NSAlert()
 +                    alert.messageText = "Couldn’t import theme"
-+                    alert.informativeText = "The theme or its wallpaper could not be read or saved. Choose a valid .palette or .tdesktop-theme file."
++                    if url.pathExtension.lowercased() == "mp4" {
++                        alert.informativeText = "Couldn’t prepare this video theme. " + error.localizedDescription
++                    } else {
++                        alert.informativeText = "The theme or its wallpaper could not be read or saved. Choose a valid .palette or .tdesktop-theme file."
++                    }
 +                    alert.beginSheetModal(for: context.window, completionHandler: nil)
 +                }
 +            }

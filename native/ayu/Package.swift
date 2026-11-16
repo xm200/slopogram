@@ -9,7 +9,7 @@ let package = Package(
     products: [.library(name: "SlopogramAyu", targets: ["SlopogramAyu"])],
     targets: [
         .systemLibrary(name: "slopogram_ayu_ffiFFI", path: "Generated/FFI"),
-        .target(name: "SlopogramAyu", dependencies: ["slopogram_ayu_ffiFFI"], path: "Generated/Swift", linkerSettings: [.unsafeFlags(["-L", libraryDir, "-lslopogram_ayu_ffi", "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
-        .testTarget(name: "SlopogramAyuTests", dependencies: ["SlopogramAyu"], linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", libraryDir])]),
+        .target(name: "SlopogramAyu", dependencies: ["slopogram_ayu_ffiFFI"], path: ".", exclude: ["Generated/FFI", "Tests"], sources: ["Generated/Swift", "Sources/SlopogramAyu"], linkerSettings: [.unsafeFlags(["-L", libraryDir, "-lslopogram_ayu_ffi", "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
+        .testTarget(name: "SlopogramAyuTests", dependencies: ["SlopogramAyu"], resources: [.copy("Fixtures")], linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", libraryDir])]),
     ]
 )

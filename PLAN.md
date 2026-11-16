@@ -1,5 +1,24 @@
 # Milestone 1: a working Rust Telegram desktop client
 
+## Direct MP4 theme import
+
+The macOS **Import Theme…** panel accepts a local MP4 alongside the existing
+theme formats. It derives the interface and bubble colors from sampled frames,
+saves a JPEG of the first frame, and sends those assets through the existing
+theme transaction and wallpaper player. Compatible silent H.264 video is reused.
+Other supported video is trimmed and converted to a short silent loop. Native
+Low Power Mode and Reduce Motion continue to use the stored poster.
+
+The distributable DMG includes a blank configuration template. The installed
+app reads the user's private settings from Application Support or an explicit
+`SLOPOGRAM_CONFIG_FILE` override.
+
+An isolated import of the 720p aurora clip verified palette parsing, a matching
+1280 × 720 JPEG, byte-for-byte video preservation, and restoration after removing
+the source. A portrait 120 fps fixture exercised conversion and reimport. The
+AppKit player fixture exercised low-power fallback and resume. The mounted arm64
+DMG matched the signed app and passed the blank-template and account-data checks.
+
 ## Animated chat wallpapers — Apple Silicon test build
 
 **Authoring format.** Ship the colors, a still image of the first frame, and an optional silent H.264 MP4 together. The user selects one file in **Slopogram → Import Theme…**. An illustrated theme uses this layout

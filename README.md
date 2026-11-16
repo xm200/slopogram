@@ -38,8 +38,13 @@ installer. A successful bundle step produces
 `target/release/Slopogram Native.app`.
 
 To package that app for another Mac, run `scripts/package-native-dmg.sh`.
-It creates `target/release/Slopogram Native.dmg` with the app and an
-Applications shortcut. The script mounts the image read-only, checks the
+It creates `target/release/Slopogram Native.dmg` with the app, an
+Applications shortcut, and a blank `Slopogram.env.example`. For a new Mac,
+fill in your own API ID and hash and save the file at
+`~/Library/Application Support/Slopogram Native/.env` before launching.
+The installed app checks that location on startup. `SLOPOGRAM_CONFIG_FILE`
+can select a different file, and process environment variables override
+individual settings. The script mounts the image read-only, checks the
 signature, and compares the packaged app with the build output. The development
 build uses an ad-hoc signature.
 
@@ -50,7 +55,16 @@ available for use on a white background. To regenerate the layer images and
 legacy `.icns` after changing the artwork, run `scripts/generate-macos-icon.sh`
 before bundling.
 
-After signing in, choose **Slopogram → Import Theme…** and select the original
+After signing in, choose **Slopogram → Import Theme…** and select an MP4 to
+generate a theme directly. Slopogram samples four frames for the interface
+and bubble colors, uses the first video frame as the Low Power Mode wallpaper,
+and saves both the loop and the still locally. The original file can then be moved.
+Silent H.264 clips up to 30 seconds and 16 MiB keep their original quality
+when each dimension is at most 1920 pixels and the frame rate is at most 60 fps.
+Other supported MP4s up to 512 MiB use the first 15 seconds of video to make a
+silent loop, or the whole clip if it is shorter.
+
+To use an existing theme, select the original
 `.tdesktop-theme` file. Slopogram translates its colors, installs its embedded
 wallpaper, and saves them together for the next launch. Tiled backgrounds repeat
 across the chat. The converted Slopogram `.palette` files also load the matching

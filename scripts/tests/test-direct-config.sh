@@ -9,12 +9,19 @@ mkdir -m 700 "$TEST_DIR/data"
 mkdir -m 755 "$TEST_DIR/shared"
 ln -s "$TEST_DIR/data" "$TEST_DIR/link"
 cp "$ROOT/native/telegram-patches/SlopogramExternalConfiguration.swift" "$SOURCE/"
-printf 'TELEGRAM_API_ID=123\nTELEGRAM_API_HASH=fake\n' > "$TEST_DIR/repo/.env"
+printf 'TELEGRAM_API_ID=123\nTELEGRAM_API_HASH=fake\n' > "$TEST_DIR/work/.env"
 cat > "$TEST_DIR/Test.swift" <<'SWIFT'
 import Foundation
 @main struct Test {
     static func main() {
         switch CommandLine.arguments[1] {
+        case "candidates":
+            let home = URL(fileURLWithPath: "/synthetic/home")
+            let cwd = URL(fileURLWithPath: "/synthetic/work")
+            let executable = URL(fileURLWithPath: "/Applications/Slopogram.app/Contents/MacOS/Slopogram")
+            let paths = SlopogramExternalConfiguration.candidates(explicit: nil, home: home, currentDirectory: cwd, executable: executable)
+            precondition(paths.first?.path == "/synthetic/home/Library/Application Support/Slopogram Native/.env")
+            precondition(SlopogramExternalConfiguration.candidates(explicit: "/synthetic/override", home: home, currentDirectory: cwd, executable: executable).map(\.path) == ["/synthetic/override"])
         case "scope":
             let first = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
             let alias = URL(fileURLWithPath: CommandLine.arguments[3], isDirectory: true)
@@ -50,14 +57,16 @@ import Foundation
 SWIFT
 swiftc -module-cache-path "$TEST_DIR/cache" "$SOURCE/SlopogramExternalConfiguration.swift" "$TEST_DIR/Test.swift" -o "$TEST_DIR/test"
 cd "$TEST_DIR/work"
-env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" "$TEST_DIR/test" fallback
-env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" TELEGRAM_API_ID=456 "$TEST_DIR/test" override
+env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" SLOPOGRAM_CONFIG_FILE="$TEST_DIR/work/.env" "$TEST_DIR/test" fallback
+env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" SLOPOGRAM_CONFIG_FILE="$TEST_DIR/work/.env" TELEGRAM_API_ID=456 "$TEST_DIR/test" override
 env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" SLOPOGRAM_CONFIG_FILE="$TEST_DIR/missing" "$TEST_DIR/test" missing
-env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" SLOPOGRAM_PROXY=socks5://localhost:1080 "$TEST_DIR/test" proxy
-env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" SLOPOGRAM_PROXY=invalid "$TEST_DIR/test" badproxy
-env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/shared" "$TEST_DIR/test" baddata
-env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/link" "$TEST_DIR/test" baddata
-env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/new" "$TEST_DIR/test" fallback
+env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" SLOPOGRAM_CONFIG_FILE="$TEST_DIR/work/.env" SLOPOGRAM_PROXY=socks5://localhost:1080 "$TEST_DIR/test" proxy
+env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/data" SLOPOGRAM_CONFIG_FILE="$TEST_DIR/work/.env" SLOPOGRAM_PROXY=invalid "$TEST_DIR/test" badproxy
+env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/shared" SLOPOGRAM_CONFIG_FILE="$TEST_DIR/work/.env" "$TEST_DIR/test" baddata
+env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/link" SLOPOGRAM_CONFIG_FILE="$TEST_DIR/work/.env" "$TEST_DIR/test" baddata
+env -i PATH=/usr/bin:/bin SLOPOGRAM_DATA_DIR="$TEST_DIR/new" SLOPOGRAM_CONFIG_FILE="$TEST_DIR/work/.env" "$TEST_DIR/test" fallback
 [[ "$(stat -f %Lp "$TEST_DIR/new")" == 700 ]]
 
 "$TEST_DIR/test" scope "$TEST_DIR/data" "$TEST_DIR/link" "$TEST_DIR/shared"
+
+"$TEST_DIR/test" candidates

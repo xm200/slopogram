@@ -29,10 +29,12 @@ apply_patch_once "$UPSTREAM" "$PATCH_ROOT/0001-slopogram-app.patch"
 python3 scripts/apply-direct-upstream-config.py
 apply_patch_once "$UPSTREAM" "$PATCH_ROOT/0002-ayu-app.patch"
 apply_patch_once "$UPSTREAM" "$PATCH_ROOT/0018-streamer-app.patch"
-# Older local checkouts already carry the static wallpaper importer.
-if git -C "$UPSTREAM" apply --check "$PATCH_ROOT/0025-upgrade-theme-import.patch" 2>/dev/null; then
-    git -C "$UPSTREAM" apply "$PATCH_ROOT/0025-upgrade-theme-import.patch"
-fi
+# Upgrade the importer in checkouts prepared by earlier releases.
+for upgrade in 0025-upgrade-theme-import.patch 0028-upgrade-direct-mp4-import.patch; do
+    if git -C "$UPSTREAM" apply --check "$PATCH_ROOT/$upgrade" 2>/dev/null; then
+        git -C "$UPSTREAM" apply "$PATCH_ROOT/$upgrade"
+    fi
+done
 apply_patch_once "$UPSTREAM" "$PATCH_ROOT/0020-theme-import-app.patch"
 if [[ -f "$PATCH_ROOT/0002-ayu-telegram-ios.patch" ]]; then apply_patch_once "$IOS" "$PATCH_ROOT/0002-ayu-telegram-ios.patch"; fi
 apply_patch_once "$IOS" "$PATCH_ROOT/0003-ghost-telegram-ios.patch"
