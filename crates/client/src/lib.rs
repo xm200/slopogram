@@ -1,7 +1,7 @@
 //! Runtime-owning client facade for native frontends.
 
 use slopogram_core::Conversations;
-use slopogram_telegram::{Command, Config, Event};
+use slopogram_telegram::{Command, Config, Event, Operation};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -112,6 +112,10 @@ impl Client {
             let event = events.recv().await?;
             let mut state = self.conversations.lock().unwrap();
             let event = match event {
+                Event::HistoryStarted(chat) => {
+                    state.begin_history(chat);
+                    Event::HistoryStarted(chat)
+                }
                 Event::History { chat, messages } => {
                     state.merge_history(chat, messages);
                     Event::History {
@@ -123,7 +127,7 @@ impl Client {
                     let chat = message.chat;
                     let id = message.id;
                     state.upsert(message);
-                    match state.messages(chat).find(|m| m.id == id).cloned() {
+                    match state.get(chat, id).cloned() {
                         Some(message) => Event::Message(message),
                         None => continue,
                     }
@@ -132,7 +136,7 @@ impl Client {
                     let chat = message.chat;
                     let id = message.id;
                     state.upsert(message);
-                    match state.messages(chat).find(|m| m.id == id).cloned() {
+                    match state.get(chat, id).cloned() {
                         Some(message) => Event::Sent { request, message },
                         None => return Some(ClientEvent::SendConfirmed { request }),
                     }
@@ -140,6 +144,16 @@ impl Client {
                 Event::Deleted { chat, ids } => {
                     state.delete(chat, &ids);
                     Event::Deleted { chat, ids }
+                }
+                Event::Failure {
+                    operation: Operation::History(chat),
+                    message,
+                } => {
+                    state.end_history(chat);
+                    Event::Failure {
+                        operation: Operation::History(chat),
+                        message,
+                    }
                 }
                 Event::Stopped => {
                     if let Some(done) = self.done.lock().unwrap().take() {

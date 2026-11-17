@@ -213,7 +213,7 @@ and libclang.
 - Windows: Visual Studio C++ Build Tools, Windows SDK, and LLVM. Set
   `LIBCLANG_PATH` to LLVM's `bin` directory if bindgen cannot find libclang.
 - Debian/Ubuntu: `build-essential pkg-config clang libclang-dev
-  libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev
+  libsqlite3-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev
   libxrandr-dev libxcursor-dev`.
 
 From the repository root:
@@ -232,7 +232,9 @@ TELEGRAM_API_HASH=your_32_character_application_hash
 
 These are application credentials, not a bot token. Process environment variables
 take precedence over files. Configuration is loaded from the first available
-`.env` in the working directory, beside the executable, or in this build's source
+`.env` in the working directory, in the Linux user configuration directory
+(`$XDG_CONFIG_HOME/slopogram/.env`, normally `~/.config/slopogram/.env`),
+beside the executable, or in this build's source
 repository. The repository fallback lets a locally built app bundle use your
 existing development configuration when opened from Finder. For a relocated app,
 set `SLOPOGRAM_CONFIG_FILE` to an external configuration file. Restart after
@@ -327,6 +329,28 @@ The Iced macOS fallback uses a public AppKit `NSVisualEffectView` behind its
 transparent window. Windows and Linux use adaptive Iced styling.
 
 ## Release binary
+
+### Arch Linux
+
+The `slopogram-git` AUR recipe packages the Linux Iced client. Install
+`base-devel` and `git`, then run these commands as your regular user from
+this checkout. The recipe fetches the source from the project's GitHub repository.
+
+```sh
+cd packaging/aur
+makepkg -si
+```
+
+For first-time setup, copy the blank template and fill in your Telegram API ID
+and hash. Launch **Slopogram** from the applications menu or run `slopogram`.
+
+```sh
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/slopogram"
+mkdir -p "$config_dir"
+test -e "$config_dir/.env" || install -m 600 /usr/share/slopogram/env.example "$config_dir/.env"
+```
+
+### Standalone executable
 
 Build an optimized executable for your current platform:
 

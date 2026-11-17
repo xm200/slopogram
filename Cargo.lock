@@ -3600,6 +3600,7 @@ dependencies = [
 name = "slopogram-ayu-ffi"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
  "slopogram-ayu",
  "slopogram-core",
  "tempfile",
@@ -3624,6 +3625,7 @@ version = "0.1.0"
 name = "slopogram-desktop"
 version = "0.1.0"
 dependencies = [
+ "directories",
  "dotenvy",
  "iced",
  "slopogram-core",

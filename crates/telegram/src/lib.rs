@@ -101,6 +101,7 @@ pub enum Event {
     },
     Chats(Vec<Chat>),
     ChatUpdated(Chat),
+    HistoryStarted(ChatId),
     History {
         chat: ChatId,
         messages: Vec<Message>,
@@ -251,6 +252,7 @@ async fn run(
     .await
     .context("Timed out starting Telegram updates. Retry the connection.")?
     .map_err(|error| anyhow!("Cannot start Telegram updates: {error}"))?;
+    emit(&events, Event::Connection { connected: true }).await?;
     let (stop, stop_receiver) = oneshot::channel();
     let stored_guard = Arc::clone(&connection._stored);
     let update_events = events.clone();
@@ -259,8 +261,6 @@ async fn run(
         let _stored = stored_guard;
         receive_updates(updates, update_events, stop_receiver).await;
     }));
-    emit(&events, Event::Connection { connected: true }).await?;
-
     loop {
         let command = tokio::select! {
             command = commands.recv() => command,
@@ -273,10 +273,13 @@ async fn run(
                 Ok(chats) => emit(&events, Event::Chats(chats)).await?,
                 Err(error) => failure(&events, Operation::Chats, error).await,
             },
-            Some(Command::OpenChat(chat)) => match history(&client, &peers, chat).await {
-                Ok(messages) => emit(&events, Event::History { chat, messages }).await?,
-                Err(error) => failure(&events, Operation::History(chat), error).await,
-            },
+            Some(Command::OpenChat(chat)) => {
+                emit(&events, Event::HistoryStarted(chat)).await?;
+                match history(&client, &peers, chat).await {
+                    Ok(messages) => emit(&events, Event::History { chat, messages }).await?,
+                    Err(error) => failure(&events, Operation::History(chat), error).await,
+                }
+            }
             Some(Command::MarkRead(chat)) => {
                 if let Err(error) = mark_read(&client, &peers, chat).await {
                     failure(
@@ -541,17 +544,45 @@ async fn mark_read(client: &Client, peers: &HashMap<ChatId, PeerRef>, chat: Chat
     request(client.mark_as_read(peer)).await
 }
 
+async fn report_connection_change<T>(
+    events: &mpsc::Sender<Event>,
+    connected: &mut bool,
+    update: &Result<T, grammers_client::InvocationError>,
+) -> Result<()> {
+    use grammers_client::InvocationError;
+    let next = match update {
+        Ok(_) | Err(InvocationError::Rpc(_)) => true,
+        Err(
+            InvocationError::Io(_) | InvocationError::Transport(_) | InvocationError::Dropped(_),
+        ) => false,
+        Err(_) => return Ok(()),
+    };
+    if *connected != next {
+        emit(events, Event::Connection { connected: next }).await?;
+        *connected = next;
+    }
+    Ok(())
+}
+
 async fn receive_updates(
     mut updates: UpdateStream,
     events: mpsc::Sender<Event>,
     mut stop: oneshot::Receiver<()>,
 ) {
+    // run() has already announced the initial connected state.
+    let mut connected = true;
     loop {
         let update = tokio::select! {
             _ = &mut stop => break,
             _ = events.closed() => break,
             update = updates.next() => update,
         };
+        if report_connection_change(&events, &mut connected, &update)
+            .await
+            .is_err()
+        {
+            break;
+        }
         let event = match update {
             Ok(Update::NewMessage(message) | Update::MessageEdited(message)) => {
                 if let Some(title) = message.peer().and_then(|peer| peer.name()) {
@@ -575,7 +606,6 @@ async fn receive_updates(
             }),
             Ok(_) => None,
             Err(error) => {
-                let _ = emit(&events, Event::Connection { connected: false }).await;
                 failure(&events, Operation::Updates, error).await;
                 tokio::select! {
                     _ = &mut stop => break,
@@ -598,7 +628,6 @@ async fn receive_updates(
             )
             .await;
         }
-        let _ = emit(&events, Event::Connection { connected: true }).await;
     }
     if let Err(error) = updates.sync_update_state().await {
         failure(
@@ -607,6 +636,40 @@ async fn receive_updates(
             format!("Cannot save synchronization state: {error}"),
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn update_stream_announces_only_disconnect_and_recovery() {
+        use grammers_client::InvocationError;
+        let (events, mut receiver) = mpsc::channel(8);
+        let mut connected = true;
+        let offline = || Err(InvocationError::Io(std::io::ErrorKind::NotConnected.into()));
+        for update in [
+            Ok(()),
+            Err(InvocationError::InvalidDc),
+            offline(),
+            offline(),
+            Ok(()),
+            Ok(()),
+        ] {
+            report_connection_change(&events, &mut connected, &update)
+                .await
+                .unwrap();
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Event::Connection { connected: false })
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Event::Connection { connected: true })
+        ));
+        assert!(receiver.try_recv().is_err());
     }
 }
 

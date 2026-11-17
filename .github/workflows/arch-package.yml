@@ -1,0 +1,46 @@
+name: Arch Linux package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build package in Arch Linux
+        run: |
+          mkdir -p "$RUNNER_TEMP/arch-artifacts"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/checkout:ro" \
+            -v "$RUNNER_TEMP/arch-artifacts:/artifacts" \
+            archlinux:base-devel bash -euxo pipefail -c '
+              mapfile -t deps < <(sed -En "s/^[[:space:]]*(make)?depends = (.*)$/\\2/p" /checkout/packaging/aur/.SRCINFO)
+              pacman -Syu --noconfirm --needed -- "${deps[@]}"
+              useradd -m builder
+              cp -a /checkout/packaging/aur /home/builder/aur
+              git config --global --add safe.directory /checkout
+              git clone --bare --no-local /checkout /home/builder/aur/slopogram
+              git --git-dir=/home/builder/aur/slopogram update-ref refs/heads/package-build "$(git -C /checkout rev-parse HEAD)"
+              git --git-dir=/home/builder/aur/slopogram symbolic-ref HEAD refs/heads/package-build
+              git --git-dir=/home/builder/aur/slopogram config remote.origin.url https://github.com/xm200/slopogram.git
+              chown -R builder:builder /home/builder/aur
+              cd /home/builder/aur
+              su builder -s /bin/bash -c "makepkg --printsrcinfo" > /tmp/SRCINFO
+              diff -u .SRCINFO /tmp/SRCINFO
+              su builder -s /bin/bash -c "makepkg --holdver --noconfirm"
+              cp ./*.pkg.tar.zst /artifacts/
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slopogram-arch-package
+          path: ${{ runner.temp }}/arch-artifacts/*.pkg.tar.zst
+          if-no-files-found: error

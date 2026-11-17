@@ -344,6 +344,7 @@ impl App {
                     self.chats.insert(0, chat);
                 }
             }
+            Event::HistoryStarted(chat) => self.conversations.begin_history(chat),
             Event::History { chat, messages } => {
                 self.conversations.merge_history(chat, messages);
                 self.loading.remove(&chat);
@@ -387,6 +388,7 @@ impl App {
                     Operation::Login => self.busy = false,
                     Operation::Chats => self.chats_loading = false,
                     Operation::History(chat) => {
+                        self.conversations.end_history(chat);
                         self.loading.remove(&chat);
                     }
                     Operation::Send(request) => {
@@ -937,32 +939,15 @@ fn backend_stream(generation: &u64) -> impl Stream<Item = UiMessage> + use<> {
                     .await;
                 return;
             }
-            let config = match Config::from_env() {
-                Ok(config) => config,
-                Err(error) => {
-                    let _ = output
-                        .send(UiMessage::Backend(
-                            generation,
-                            Event::Fatal(error.to_string()),
-                        ))
-                        .await;
-                    return;
-                }
-            };
-            // Explicit SLOPOGRAM_PROXY wins; otherwise default to the macOS
-            // system SOCKS proxy when one is configured.
-            let config = if config.proxy().is_none() {
-                #[cfg(target_os = "macos")]
-                {
+            let config = Config::from_env();
+            #[cfg(target_os = "macos")]
+            let config = config.and_then(|config| {
+                if config.proxy().is_some() {
+                    Ok(config)
+                } else {
                     config.with_proxy(slopogram_macos::system_proxy())
                 }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    Ok(config)
-                }
-            } else {
-                Ok(config)
-            };
+            });
             let config = match config {
                 Ok(config) => config,
                 Err(error) => {

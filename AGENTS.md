@@ -13,9 +13,9 @@ enable/view switch. Clearing retained history must not disable future capture.
 Streamer mode masks all personal information and message content; Ghost mode
 suppresses outgoing activity. Use event-driven native power/accessibility
 observers, batched storage, and no new idle polling for these modes.
-The current build scope is Apple Silicon macOS only. Do not compile Intel or
-rebuild the older fallback apps; the user requested removal of their generated
-application bundles on 2026-11-16. Preserve source projects and account data.
+The native macOS build targets Apple Silicon. The Linux Iced client supports
+Ubuntu builds and the Arch package in `packaging/aur`. Preserve source projects
+and account data. The user requested removal of the older macOS fallback bundles.
 
 ## Architecture
 
@@ -115,8 +115,8 @@ synthetic AppKit windows and must not load a Telegram account. A passing fixture
 does not prove every upstream window path or cached accessibility reference is
 protected, nor does it measure battery life.
 
-Do not run historical Iced/SwiftUI/prototype app build or bundle commands for
-this task; they would recreate applications the user requested removing.
+Skip historical macOS Iced/SwiftUI/prototype app builds and bundles. They would
+recreate applications the user requested removing.
 
 The native `--smoke-test` mode uses local fixtures and must not read credentials
 or contact Telegram. A process smoke test does not establish visual quality or

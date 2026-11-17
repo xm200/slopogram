@@ -1,5 +1,25 @@
 # Milestone 1: a working Rust Telegram desktop client
 
+## Session memory and journal maintenance
+
+The Rust session keeps the latest 500 message IDs per chat and looks up individual
+messages by ID. The update worker reports its initial connection state and later
+transitions. Deletion tracking has separate 500-ID limits for scoped and
+account-wide deletions. Each history request records when it started so an
+overlapping deletion still takes precedence if its individual ID was evicted.
+
+The Ayu journal replaces its event log with a transactionally written snapshot
+above 4,096 rows. Archived messages and their versions remain in that snapshot.
+Each Ayu feature instance queues storage calls on one worker and releases its
+journal lock when dropped.
+
+## Linux desktop packaging
+
+The Linux Iced client has an Arch VCS recipe in `packaging/aur`. It installs
+the desktop launcher and reads per-user configuration from the XDG config
+directory. The Arch package workflow builds the revision under test. The
+original Telegram frontend continues to target Apple Silicon macOS.
+
 ## Direct MP4 theme import
 
 The macOS **Import Theme…** panel accepts a local MP4 alongside the existing

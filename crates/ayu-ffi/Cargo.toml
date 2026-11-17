@@ -16,6 +16,7 @@ uniffi = "0.32.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+rusqlite = "=0.37.0"
 
 [lints]
 workspace = true

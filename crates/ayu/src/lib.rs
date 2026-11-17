@@ -74,6 +74,13 @@ struct Data {
     cosmetics: LocalCosmetics,
 }
 
+const MAX_EVENTS: usize = 4096;
+
+#[derive(Serialize)]
+enum BorrowedSnapshot<'a> {
+    Snapshot(&'a Data),
+}
+
 #[derive(Serialize, Deserialize)]
 enum Operation {
     Snapshot(Data),
@@ -108,6 +115,7 @@ pub struct Journal {
     pending: Vec<Operation>,
     replaying: bool,
     replace: bool,
+    persisted_events: usize,
     _lock: fs::File,
 }
 impl Journal {
@@ -263,12 +271,14 @@ impl Journal {
             }
             operations
         };
+        let persisted_events = operations.len();
         let mut journal = Self {
             connection,
             data: Data::default(),
             pending: Vec::new(),
             replaying: true,
             replace: false,
+            persisted_events,
             _lock: lock,
         };
         for operation in operations {
@@ -290,6 +300,9 @@ impl Journal {
                 .connection
                 .execute("DELETE FROM metadata WHERE key='legacy_migrated'", [])
                 .map_err(|e| e.to_string())?;
+        }
+        if journal.persisted_events > MAX_EVENTS {
+            journal.save()?;
         }
         Ok(journal)
     }
@@ -625,32 +638,42 @@ impl Journal {
         self.data.local_global.clear();
         self.pending.clear();
         self.replace = true;
-        if !self.replaying {
-            self.pending.push(Operation::Snapshot(self.data.clone()));
-        }
     }
     pub fn save(&mut self) -> Result<(), String> {
-        if self.pending.is_empty() && !self.replace {
+        let snapshot =
+            self.replace || self.persisted_events.saturating_add(self.pending.len()) > MAX_EVENTS;
+        if self.pending.is_empty() && !snapshot {
             return Ok(());
         }
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
-        if self.replace {
+        if snapshot {
+            let payload = serde_json::to_string(&BorrowedSnapshot::Snapshot(&self.data))
+                .map_err(|e| e.to_string())?;
             tx.execute("DELETE FROM events", [])
                 .map_err(|e| e.to_string())?;
-        }
-        for operation in &self.pending {
-            let payload = serde_json::to_string(operation).map_err(|e| e.to_string())?;
             tx.execute("INSERT INTO events(payload) VALUES (?1)", [&payload])
                 .map_err(|e| e.to_string())?;
+        } else {
+            for operation in &self.pending {
+                let payload = serde_json::to_string(operation).map_err(|e| e.to_string())?;
+                tx.execute("INSERT INTO events(payload) VALUES (?1)", [&payload])
+                    .map_err(|e| e.to_string())?;
+            }
         }
         tx.commit().map_err(|e| e.to_string())?;
+        self.persisted_events = if snapshot {
+            1
+        } else {
+            self.persisted_events + self.pending.len()
+        };
         self.pending.clear();
-        if self.replace {
+        let checkpoint = self.replace;
+        self.replace = false;
+        if checkpoint {
             self.connection
                 .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(|e| e.to_string())?;
         }
-        self.replace = false;
         Ok(())
     }
 }
@@ -719,6 +742,89 @@ mod tests {
         j.save().unwrap();
         drop(j);
         assert!(Journal::open(dir).unwrap().entries(1).is_empty());
+    }
+    #[test]
+    fn event_log_compacts_and_reopens() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("journal");
+        let mut journal = Journal::open(dir.clone()).unwrap();
+        journal.set_policy(Policy {
+            suppress_typing: true,
+            ..Policy::default()
+        });
+        journal.observe(&msg(1, 1, "first", None), false, None);
+        journal.observe(&msg(1, 1, "edited", Some(2)), false, None);
+        journal.delete(ChatId(1), &[1]);
+        journal.save().unwrap();
+        for id in 2..=4093 {
+            journal.observe(&msg(1, id, "retained", None), false, None);
+        }
+        journal.save().unwrap();
+        assert_eq!(journal.persisted_events, MAX_EVENTS);
+        journal.observe(&msg(1, 5000, "last", None), false, None);
+        journal
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_compaction BEFORE INSERT ON events
+             BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+            )
+            .unwrap();
+        assert!(journal.save().is_err());
+        let count = |j: &Journal| {
+            j.connection
+                .query_row("SELECT COUNT(*) FROM events", [], |row| {
+                    row.get::<_, usize>(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(count(&journal), MAX_EVENTS);
+        journal
+            .connection
+            .execute_batch("DROP TRIGGER reject_compaction")
+            .unwrap();
+        journal.save().unwrap();
+        assert_eq!(count(&journal), 1);
+        drop(journal);
+        let journal = Journal::open(dir).unwrap();
+        assert_eq!(count(&journal), 1);
+        assert!(journal.policy().suppress_typing);
+        let entry = journal
+            .entries(1)
+            .into_iter()
+            .find(|entry| entry.message_id == 1)
+            .unwrap();
+        assert!(entry.deleted);
+        assert_eq!(entry.versions.len(), 2);
+        assert!(
+            journal
+                .entries(1)
+                .iter()
+                .any(|entry| entry.message_id == 5000)
+        );
+    }
+
+    #[test]
+    fn oversized_existing_log_compacts_on_open() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("journal");
+        let mut journal = Journal::open(dir.clone()).unwrap();
+        journal.observe(&msg(1, 1, "retained", None), false, None);
+        journal.save().unwrap();
+        journal
+            .connection
+            .execute_batch(
+                "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 4096)
+             INSERT INTO events(payload) SELECT (SELECT payload FROM events LIMIT 1) FROM n;",
+            )
+            .unwrap();
+        drop(journal);
+        let journal = Journal::open(dir).unwrap();
+        let count: usize = journal
+            .connection
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(journal.entries(1)[0].versions[0].text, "retained");
     }
     #[test]
     fn corrupt_journal_is_not_reset() {

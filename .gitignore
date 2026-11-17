@@ -1,4 +1,9 @@
 /target/
+/packaging/aur/pkg/
+/packaging/aur/src/
+/packaging/aur/slopogram/
+/packaging/aur/*.pkg.tar.*
+/packaging/aur/*.src.tar.*
 .env
 .env.*
 !.env.example

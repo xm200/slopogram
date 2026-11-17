@@ -12,6 +12,9 @@ dotenvy.workspace = true
 iced = { workspace = true, features = ["qr_code"] }
 tokio.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+directories.workspace = true
+
 [target.'cfg(target_os = "macos")'.dependencies]
 slopogram-macos = { path = "../macos" }
 

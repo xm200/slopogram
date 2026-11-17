@@ -98,9 +98,9 @@ pub enum ClientEvent {
         request_id: u64,
     },
 }
-impl From<Event> for ClientEvent {
-    fn from(e: Event) -> Self {
-        match e {
+impl ClientEvent {
+    fn from_backend(e: Event) -> Option<Self> {
+        Some(match e {
             Event::Auth(AuthStep::Phone) => Self::AuthPhone,
             Event::Auth(AuthStep::Code) => Self::AuthCode,
             Event::Auth(AuthStep::Password { hint }) => Self::AuthPassword { hint },
@@ -110,6 +110,7 @@ impl From<Event> for ClientEvent {
                 chats: chats.into_iter().map(Into::into).collect(),
             },
             Event::ChatUpdated(chat) => Self::ChatUpdated { chat: chat.into() },
+            Event::HistoryStarted(_) => return None,
             Event::History { chat, messages } => Self::History {
                 chat_id: chat.0,
                 messages: messages.into_iter().map(Into::into).collect(),
@@ -138,7 +139,7 @@ impl From<Event> for ClientEvent {
             },
             Event::Fatal(message) => Self::Fatal { message },
             Event::Stopped => Self::Stopped,
-        }
+        })
     }
 }
 #[derive(Debug, uniffi::Error)]
@@ -220,14 +221,20 @@ impl Engine {
         .await
     }
     pub async fn next_event(&self) -> Option<ClientEvent> {
-        self.client.next_event().await.map(|event| match event {
-            slopogram_client::ClientEvent::Backend(event) => event.into(),
-            slopogram_client::ClientEvent::SendConfirmed { request } => {
-                ClientEvent::SendConfirmed {
-                    request_id: request,
+        loop {
+            match self.client.next_event().await? {
+                slopogram_client::ClientEvent::Backend(event) => {
+                    if let Some(event) = ClientEvent::from_backend(event) {
+                        return Some(event);
+                    }
+                }
+                slopogram_client::ClientEvent::SendConfirmed { request } => {
+                    return Some(ClientEvent::SendConfirmed {
+                        request_id: request,
+                    });
                 }
             }
-        })
+        }
     }
     pub async fn shutdown(&self) -> Result<(), EngineError> {
         self.client.shutdown().await.map_err(error)
@@ -254,22 +261,22 @@ mod tests {
             sent_at: 1,
             edited_at: Some(2),
         };
-        match ClientEvent::from(Event::History {
+        match ClientEvent::from_backend(Event::History {
             chat: ChatId(-42),
             messages: vec![message],
         }) {
-            ClientEvent::History { chat_id, messages } => {
+            Some(ClientEvent::History { chat_id, messages }) => {
                 assert_eq!(chat_id, -42);
                 assert_eq!(messages[0].id, 7);
                 assert_eq!(messages[0].edited_at, Some(2));
             }
             _ => panic!("wrong event"),
         }
-        match ClientEvent::from(Event::Failure {
+        match ClientEvent::from_backend(Event::Failure {
             operation: Operation::Send(123),
             message: "failed".into(),
         }) {
-            ClientEvent::Failure { operation, .. } => assert_eq!(operation, "send:123"),
+            Some(ClientEvent::Failure { operation, .. }) => assert_eq!(operation, "send:123"),
             _ => panic!("wrong event"),
         }
     }

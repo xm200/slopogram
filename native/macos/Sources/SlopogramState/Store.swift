@@ -106,7 +106,14 @@ public func displayMessage(for error: Error) -> String {
         }
     }
     private func merge(_ message: MessageRecord) {
-        timelines[message.chatId, default: [:]][message.id] = message
+        // Match the Rust session's 500-row window between history snapshots.
+        Self.merge(message, into: &timelines[message.chatId, default: [:]])
+    }
+    private static func merge(_ message: MessageRecord, into timeline: inout [Int32: MessageRecord]) {
+        timeline[message.id] = message
+        if timeline.count > 500, let oldest = timeline.keys.min() {
+            timeline.removeValue(forKey: oldest)
+        }
     }
     func apply(_ event: ClientEvent) {
         switch event {

@@ -66,10 +66,23 @@ pub struct ArchivedMessage {
     pub versions: Vec<ArchivedVersion>,
 }
 
+type JournalAction = Box<dyn FnOnce(&PathBuf) + Send>;
+
 #[derive(uniffi::Object)]
 pub struct AyuFeatures {
-    directory: PathBuf,
     journal: Arc<std::sync::Mutex<Option<slopogram_ayu::Journal>>>,
+    sender: Option<tokio::sync::mpsc::Sender<JournalAction>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for AyuFeatures {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+        if let Some(worker) = self.worker.take()
+            && worker.thread().id() != std::thread::current().id()
+        {
+            let _ = worker.join();
+        }
+    }
 }
 impl AyuFeatures {
     async fn run<T, F>(&self, action: F) -> Result<T, EngineError>
@@ -77,25 +90,31 @@ impl AyuFeatures {
         T: Send + 'static,
         F: FnOnce(&mut slopogram_ayu::Journal) -> Result<T, String> + Send + 'static,
     {
-        let directory = self.directory.clone();
-        let journal = self.journal.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        std::thread::spawn(move || {
+        let journal = self.journal.clone();
+        let job: JournalAction = Box::new(move |directory| {
             let result = (|| {
                 let mut guard = journal
                     .lock()
                     .map_err(|_| "Local history unavailable".to_string())?;
-                if guard.is_none() {
-                    *guard = Some(slopogram_ayu::Journal::open(directory)?);
+                let journal = &mut *guard;
+                if journal.is_none() {
+                    *journal = Some(slopogram_ayu::Journal::open(directory.clone())?);
                 }
-                let result = action(guard.as_mut().ok_or("Local history unavailable")?);
+                let result = action(journal.as_mut().ok_or("Local history unavailable")?);
                 if result.is_err() {
-                    *guard = None;
+                    *journal = None;
                 }
                 result
             })();
             let _ = tx.send(result);
         });
+        self.sender
+            .as_ref()
+            .ok_or_else(|| error("Local history unavailable"))?
+            .send(job)
+            .await
+            .map_err(|_| error("Local history worker unavailable"))?;
         rx.await.map_err(error)?.map_err(error)
     }
 }
@@ -139,9 +158,20 @@ impl AyuFeatures {
 impl AyuFeatures {
     #[uniffi::constructor]
     pub fn new(data_dir: String) -> Arc<Self> {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<JournalAction>(256);
+        let worker = std::thread::Builder::new()
+            .name("ayu-journal".into())
+            .spawn(move || {
+                let directory = PathBuf::from(data_dir);
+                while let Some(action) = receiver.blocking_recv() {
+                    action(&directory);
+                }
+            })
+            .ok();
         Arc::new(Self {
-            directory: PathBuf::from(data_dir),
             journal: Arc::new(std::sync::Mutex::new(None)),
+            sender: worker.as_ref().map(|_| sender),
+            worker,
         })
     }
     pub async fn policy(&self) -> Result<FeaturePolicy, EngineError> {
@@ -316,6 +346,55 @@ impl AyuFeatures {
 mod ayu_tests {
     use super::*;
     #[tokio::test]
+    async fn cancelled_admitted_action_finishes_before_drop_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private").to_str().unwrap().to_owned();
+        let features = AyuFeatures::new(path.clone());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let task_features = features.clone();
+        let task = tokio::spawn(async move {
+            task_features
+                .run(move |_| {
+                    let _ = entered_tx.send(());
+                    release_rx.recv().unwrap();
+                    let _ = finished_tx.send(());
+                    Ok(())
+                })
+                .await
+        });
+        entered_rx.await.unwrap();
+        task.abort();
+        let _ = task.await;
+        let dropping = tokio::task::spawn_blocking(move || drop(features));
+        release_tx.send(()).unwrap();
+        dropping.await.unwrap();
+        finished_rx.await.unwrap();
+        AyuFeatures::new(path).policy().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_reuses_named_thread_and_releases_journal_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private").to_str().unwrap().to_owned();
+        let features = AyuFeatures::new(path.clone());
+        let identify = || {
+            (
+                std::thread::current().id(),
+                std::thread::current().name().map(str::to_owned),
+            )
+        };
+        let first = features.run(move |_| Ok(identify())).await.unwrap();
+        let second = features.run(move |_| Ok(identify())).await.unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.1.as_deref(), Some("ayu-journal"));
+        drop(features);
+        let reopened = AyuFeatures::new(path);
+        reopened.policy().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn archive_only_records_when_enabled_and_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("private").to_str().unwrap().to_owned();
@@ -380,8 +459,16 @@ mod ayu_tests {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("private");
         let features = AyuFeatures::new(dir.to_str().unwrap().into());
-        assert!(!features.policy().await.unwrap().suppress_typing);
-        std::fs::remove_dir_all(&dir).unwrap();
+        let mut original = features.policy().await.unwrap();
+        original.suppress_online_status = true;
+        features.set_policy(original).await.unwrap();
+        let connection = rusqlite::Connection::open(dir.join("observed-history.sqlite")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_event BEFORE INSERT ON events
+                 BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
+            )
+            .unwrap();
         let result = features
             .set_policy(FeaturePolicy {
                 suppress_read_receipts: false,
@@ -392,6 +479,14 @@ mod ayu_tests {
             .await;
         assert!(result.is_err());
         assert!(!features.policy().await.unwrap().suppress_typing);
+        connection
+            .execute_batch("DROP TRIGGER reject_event;")
+            .unwrap();
+        drop(features);
+        let reopened = AyuFeatures::new(dir.to_str().unwrap().into());
+        let persisted = reopened.policy().await.unwrap();
+        assert!(!persisted.suppress_typing);
+        assert!(persisted.suppress_online_status);
     }
 }
 

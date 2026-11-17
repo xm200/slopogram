@@ -13,6 +13,15 @@ import RustBridge
         store.apply(.history(chatId: 1, messages: []))
         XCTAssertNil(store.timelines[1]?[7])
     }
+    func testLiveMessagesKeepOnlyTheNewest500Rows() {
+        let store = Store()
+        for id: Int32 in 1...501 {
+            store.apply(.message(message: MessageRecord(chatId: 1, id: id, text: "a", sender: "A", outgoing: false, sentAt: 1, editedAt: nil)))
+        }
+        XCTAssertEqual(store.timelines[1]?.count, 500)
+        XCTAssertNil(store.timelines[1]?[1])
+        XCTAssertNotNil(store.timelines[1]?[501])
+    }
     func testPendingBecomesExplicitFailureOnStop() {
         var pending: [UInt64: (Int64, String)] = [7: (1, "unconfirmed")]
         var failed: [UInt64: (Int64, String)] = [:]
