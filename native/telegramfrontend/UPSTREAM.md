@@ -1,4 +1,4 @@
-# Telegram macOS presentation sources
+# Retired Telegram macOS presentation prototype
 
 Slopogram's Telegram presentation target uses code and image assets from
 [Telegram for macOS](https://github.com/TelegramMessenger/telegram-macos),
@@ -31,14 +31,10 @@ Postbox types. No TelegramCore/Postbox networking or second account session is
 started. The current application covers Slopogram's existing single-account,
 text-messaging scope; it does not implement the complete upstream feature set.
 
-## Reproduction
+## Source provenance
 
-Run `scripts/setup-telegram-frontend.sh` from the Slopogram repository root.
-It fetches the pinned source checkouts into ignored `native/telegram-macos`
-and checks their revisions. It does not install global tools or run upstream's
-full application setup. `scripts/bundle-telegram-frontend.sh` then generates the
-Rust bridge, builds the separate Swift package, compiles the upstream assets,
-and stages and signs `target/release/Slopogram macOS.app`.
+This prototype is retained as reference source. The current application uses
+the [direct Telegram macOS frontend](../telegram-patches/UPSTREAM.md).
 
 The original upstream source can be inspected with:
 

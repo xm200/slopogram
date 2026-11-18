@@ -520,3 +520,46 @@ pub async fn decode_desktop_theme(path: String) -> Result<DesktopTheme, EngineEr
     });
     rx.await.map_err(error)?.map_err(error)
 }
+
+#[derive(uniffi::Record)]
+pub struct DesktopThemeColor {
+    pub key: String,
+    pub value: String,
+}
+
+#[uniffi::export]
+pub async fn desktop_theme_colors(palette: String) -> Result<Vec<DesktopThemeColor>, EngineError> {
+    slopogram_ayu::theme::desktop_colors(&palette)
+        .map(|colors| {
+            colors
+                .into_iter()
+                .map(|(key, value)| DesktopThemeColor { key, value })
+                .collect()
+        })
+        .map_err(error)
+}
+
+#[uniffi::export]
+pub async fn encode_desktop_theme(
+    colors: Vec<DesktopThemeColor>,
+    wallpaper: Option<Vec<u8>>,
+    wallpaper_extension: Option<String>,
+    wallpaper_tiled: bool,
+    video: Option<Vec<u8>>,
+) -> Result<Vec<u8>, EngineError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let colors = colors
+            .into_iter()
+            .map(|color| (color.key, color.value))
+            .collect();
+        let _ = tx.send(slopogram_ayu::theme::encode(
+            colors,
+            wallpaper,
+            wallpaper_extension,
+            wallpaper_tiled,
+            video,
+        ));
+    });
+    rx.await.map_err(error)?.map_err(error)
+}

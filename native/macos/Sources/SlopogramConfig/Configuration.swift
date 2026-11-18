@@ -23,8 +23,8 @@ public enum SlopogramConfiguration {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     }
 
-    public static func candidates(cwd: URL, executable: URL, repository: URL) -> [URL] {
-        var paths = [cwd.appendingPathComponent(".env"), executable.deletingLastPathComponent().appendingPathComponent(".env")]
+    public static func candidates(cwd: URL, executable: URL, repository: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL] {
+        var paths = [cwd.appendingPathComponent(".env"), home.appendingPathComponent("Library/Application Support/Slopogram Native/.env"), executable.deletingLastPathComponent().appendingPathComponent(".env")]
         var parent = executable.deletingLastPathComponent()
         while parent.path != "/" {
             if parent.pathExtension == "app" {

@@ -1,14 +1,16 @@
 [package]
-name = "slopogram-client"
+name = "slopogram-bindgen"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
 [dependencies]
-slopogram-telegram.workspace = true
-slopogram-core.workspace = true
-tokio.workspace = true
+uniffi = { workspace = true, features = ["cli"] }
 
 [lints]
 workspace = true

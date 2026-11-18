@@ -2,7 +2,7 @@ use crate::theme_mappings::MAPPINGS;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Write},
     path::Path,
 };
 use zip::ZipArchive;
@@ -163,6 +163,294 @@ fn render_palette(name: &str, colors: &str) -> Result<(String, bool), String> {
     }
     out.push_str("wallpaper = none\n");
     Ok((out, dark))
+}
+
+pub fn desktop_colors(palette: &str) -> Result<Vec<(String, String)>, String> {
+    if palette.len() as u64 > MAX_COLORS {
+        return Err("Theme colors exceed size limit".into());
+    }
+    let mut native = HashMap::new();
+    for line in palette.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            if MAPPINGS.iter().any(|(target, _)| *target == key)
+                && native.insert(key, value.trim()).is_some()
+            {
+                return Err("Duplicate palette color".into());
+            }
+        }
+    }
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    for &(target, source) in MAPPINGS {
+        if let Some(value) = native.get(target) {
+            let (hex, alpha) = value
+                .split_once(':')
+                .map_or((value.trim(), None), |(h, a)| (h.trim(), Some(a.trim())));
+            if hex.len() != 7
+                || !hex.starts_with('#')
+                || !hex[1..].bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err("Invalid palette color".into());
+            }
+            let alpha = match alpha {
+                Some(a) => {
+                    let a: f64 = a.parse().map_err(|_| "Invalid palette alpha")?;
+                    if !a.is_finite() || !(0.0..=1.0).contains(&a) {
+                        return Err("Invalid palette alpha".into());
+                    }
+                    (a * 255.0).round() as u8
+                }
+                None => 255,
+            };
+            if seen.insert(source) {
+                result.push((
+                    source.to_string(),
+                    format!("{}{:02x}", hex.to_ascii_lowercase(), alpha),
+                ));
+            }
+        }
+    }
+    if result.is_empty() {
+        return Err("Theme has no supported colors".into());
+    }
+    Ok(result)
+}
+
+pub fn encode(
+    colors: Vec<(String, String)>,
+    wallpaper: Option<Vec<u8>>,
+    extension: Option<String>,
+    tiled: bool,
+    video: Option<Vec<u8>>,
+) -> Result<Vec<u8>, String> {
+    let mut values = HashMap::new();
+    for (key, value) in colors {
+        if key.is_empty()
+            || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || value.is_empty()
+            || values.insert(key, value).is_some()
+        {
+            return Err("Invalid or duplicate theme color".into());
+        }
+    }
+    if values.is_empty() || values.len() > 10_000 {
+        return Err("Invalid theme colors".into());
+    }
+    let mut keys: Vec<_> = values.keys().collect();
+    keys.sort();
+    let mut text = String::new();
+    for key in &keys {
+        let [r, g, b, alpha] = resolve(key, &values)?.ok_or("Missing theme color")?;
+        text.push_str(&format!("{key}: #{r:02x}{g:02x}{b:02x}{alpha:02x};\n"));
+    }
+    render_palette("Export", &text)?;
+    if text.len() as u64 > MAX_COLORS {
+        return Err("Theme colors exceed size limit".into());
+    }
+    if wallpaper.is_some() != extension.is_some()
+        || (tiled && wallpaper.is_none())
+        || (video.is_some() && (wallpaper.is_none() || tiled))
+    {
+        return Err("Inconsistent theme wallpaper".into());
+    }
+    if let Some(ref bytes) = wallpaper {
+        if bytes.len() as u64 > MAX_WALLPAPER {
+            return Err("Wallpaper exceeds size limit".into());
+        }
+        let valid = match extension.as_deref() {
+            Some("png") => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            Some("jpg") => bytes.starts_with(b"\xff\xd8\xff"),
+            _ => false,
+        };
+        if !valid {
+            return Err("Invalid wallpaper format".into());
+        }
+    }
+    if video
+        .as_ref()
+        .is_some_and(|v| v.len() as u64 > MAX_VIDEO || v.len() < 12 || &v[4..8] != b"ftyp")
+    {
+        return Err("Invalid theme video".into());
+    }
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("colors.tdesktop-theme", options)
+        .map_err(|_| "Cannot write theme")?;
+    zip.write_all(text.as_bytes())
+        .map_err(|_| "Cannot write theme")?;
+    if let Some(bytes) = wallpaper {
+        zip.start_file(
+            format!(
+                "{}.{}",
+                if tiled { "tiled" } else { "background" },
+                extension.unwrap()
+            ),
+            options,
+        )
+        .map_err(|_| "Cannot write theme")?;
+        zip.write_all(&bytes).map_err(|_| "Cannot write theme")?;
+    }
+    if let Some(bytes) = video {
+        zip.start_file("slopogram/background.mp4", options)
+            .map_err(|_| "Cannot write theme")?;
+        zip.write_all(&bytes).map_err(|_| "Cannot write theme")?;
+    }
+    let bytes = zip.finish().map_err(|_| "Cannot write theme")?.into_inner();
+    if bytes.len() as u64 > MAX_ARCHIVE {
+        return Err("Theme archive exceeds size limit".into());
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+    #[test]
+    fn palette_priority_and_alpha() {
+        let colors = desktop_colors("basicAccent = #123456:0.5\naccent = #ffffff\n").unwrap();
+        assert_eq!(colors, vec![("windowBgActive".into(), "#12345680".into())]);
+    }
+    #[test]
+    fn rejects_invalid_colors_and_aliases() {
+        for colors in [
+            vec![("unknown", "#ffffff")],
+            vec![("bad key", "#ffffff")],
+            vec![("windowBg", "#zzz")],
+            vec![("windowBg", "missing")],
+            vec![("windowBg", "other"), ("other", "windowBg")],
+        ] {
+            assert!(
+                encode(
+                    colors
+                        .into_iter()
+                        .map(|(k, v)| (k.into(), v.into()))
+                        .collect(),
+                    None,
+                    None,
+                    false,
+                    None
+                )
+                .is_err()
+            );
+        }
+        assert!(desktop_colors("background = #123456 : 0.5").is_ok());
+        assert!(desktop_colors("background = #123456 : NaN").is_err());
+    }
+    #[test]
+    fn tiled_and_bounds() {
+        let colors = vec![("windowBg".into(), "#12345680".into())];
+        let png = b"\x89PNG\r\n\x1a\nfixture".to_vec();
+        let bytes = encode(
+            colors.clone(),
+            Some(png.clone()),
+            Some("png".into()),
+            true,
+            None,
+        )
+        .unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), bytes).unwrap();
+        let theme = decode(file.path()).unwrap();
+        assert!(theme.wallpaper_tiled);
+        assert_eq!(theme.wallpaper, Some(png.clone()));
+        assert!(
+            encode(
+                colors.clone(),
+                Some(png),
+                Some("png".into()),
+                true,
+                Some(b"0000ftypxxxx".to_vec())
+            )
+            .is_err()
+        );
+        assert!(
+            encode(
+                colors.clone(),
+                Some(vec![0; MAX_WALLPAPER as usize + 1]),
+                Some("png".into()),
+                false,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            encode(
+                colors.clone(),
+                Some(b"\xff\xd8\xff".to_vec()),
+                Some("jpg".into()),
+                false,
+                Some(vec![0; MAX_VIDEO as usize + 1])
+            )
+            .is_err()
+        );
+        let mut image = vec![0; 13 * 1024 * 1024];
+        image[..3].copy_from_slice(b"\xff\xd8\xff");
+        let mut video = vec![0; 12 * 1024 * 1024];
+        video[4..8].copy_from_slice(b"ftyp");
+        assert!(encode(colors, Some(image), Some("jpg".into()), false, Some(video)).is_err());
+        assert!(desktop_colors(&"x".repeat(MAX_COLORS as usize + 1)).is_err());
+    }
+    #[test]
+    fn aliases_are_exported_as_literals() {
+        let bytes = encode(
+            vec![
+                ("windowBg".into(), "zzz".into()),
+                ("zzz".into(), "#12345680".into()),
+            ],
+            None,
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut text = String::new();
+        zip.by_name("colors.tdesktop-theme")
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert!(text.contains("windowBg: #12345680;"));
+    }
+    #[test]
+    fn archive_roundtrip_and_validation() {
+        let colors = vec![
+            ("windowBg".into(), "#12345680".into()),
+            ("windowFg".into(), "windowBg".into()),
+        ];
+        let png = b"\x89PNG\r\n\x1a\nfixture".to_vec();
+        let video = b"0000ftypfixture".to_vec();
+        let bytes = encode(
+            colors.clone(),
+            Some(png.clone()),
+            Some("png".into()),
+            false,
+            Some(video.clone()),
+        )
+        .unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), bytes).unwrap();
+        let decoded = decode(file.path()).unwrap();
+        assert!(decoded.palette.contains("background = #123456:0.501961"));
+        assert_eq!(decoded.wallpaper, Some(png));
+        assert_eq!(decoded.video, Some(video));
+        assert!(encode(colors.clone(), None, None, false, Some(vec![])).is_err());
+        assert!(encode(colors, Some(vec![1]), Some("png".into()), false, None).is_err());
+        assert!(
+            encode(
+                vec![
+                    ("x".into(), "#ffffff".into()),
+                    ("x".into(), "#000000".into())
+                ],
+                None,
+                None,
+                false,
+                None
+            )
+            .is_err()
+        );
+    }
 }
 
 pub fn decode(path: &Path) -> Result<DesktopTheme, String> {

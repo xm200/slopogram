@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/Telegram-Mac/account/SlopogramStreamerMode.swift
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,460 @@
 +import AppKit
 +import Foundation
 +import ObjectiveC.runtime
@@ -181,6 +181,7 @@
 +        item.target = self; appMenu.addItem(.separator()); appMenu.addItem(item); normalToggle = item
 +        let themeItem = NSMenuItem(title: "Import Theme…", action: NSSelectorFromString("slopogramImportTheme:"), keyEquivalent: "")
 +        appMenu.addItem(themeItem)
++        appMenu.addItem(NSMenuItem(title: "Edit Theme…", action: NSSelectorFromString("slopogramEditTheme:"), keyEquivalent: ""))
 +    }
 +    static func allowMenuMutation(_ menu: NSMenu) -> Bool {
 +        if isActive && !Thread.isMainThread { return false }

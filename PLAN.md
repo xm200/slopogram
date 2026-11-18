@@ -1,8 +1,44 @@
-# Milestone 1: a working Rust Telegram desktop client
+# Slopogram milestone record
+
+The only supported app, build, and release target is the direct Telegram macOS
+fork for Apple Silicon. Earlier Iced, SwiftUI, TGUIKit, Windows, and Linux
+work and validation below are historical; their sources remain for reference.
+Historical artifacts and commands do not describe current supported releases.
+
+## Native theme editor
+
+The native macOS menu opens **Edit Theme…** with the current palette and locally
+rendered image wallpaper. Color wells and hex fields edit a private draft with
+a sample chat preview. The editor accepts JPEG, PNG, and MP4 wallpapers. Videos
+use the existing silent-loop preparation and first-frame poster for Low Power
+Mode. The editor preview uses the poster to avoid continuous playback.
+
+**Apply** uses the existing theme import transaction and automatic-appearance
+confirmation. **Export…** writes a `.tdesktop-theme` ZIP atomically with Desktop
+color definitions, a JPEG/PNG wallpaper, and the optional
+`slopogram/background.mp4` extension. Colors use the importer's existing mapping
+between the Desktop and native palettes. Shared Desktop keys take the first
+native mapping when multiple native colors differ. Exporting and closing the
+editor leave the active theme settings intact.
+
+Acceptance checks include color and alpha round-trips, invalid colors and
+archives, PNG/JPEG/MP4 preparation, the synthetic editor window, reproducible
+patch replay, and the Apple Silicon app and DMG build. Live account rendering
+and opening the export in official Telegram Desktop are recorded separately.
+
+On 2026-11-18, workspace formatting, tests and strict Clippy passed. All 11 Swift
+tests passed with the synthetic editor fixtures enabled, including color-well
+synchronization, invalid drafts across search, and applying an exported archive.
+The native policy, wallpaper import, low-power player and patch replay checks
+passed. The Apple Silicon app built and the mounted DMG matched its signed app
+with eight ARM64 Mach-O files and a blank external configuration template.
+The view-cache image omits some layer-rendered text, and Computer Use access to
+the standalone preview app was denied. Full desktop visual verification and
+live-account application remain pending the user's test.
 
 ## Session memory and journal maintenance
 
-The Rust session keeps the latest 500 message IDs per chat and looks up individual
+The archived grammers session keeps the latest 500 message IDs per chat and looks up individual
 messages by ID. The update worker reports its initial connection state and later
 transitions. Deletion tracking has separate 500-ID limits for scoped and
 account-wide deletions. Each history request records when it started so an
@@ -13,12 +49,10 @@ above 4,096 rows. Archived messages and their versions remain in that snapshot.
 Each Ayu feature instance queues storage calls on one worker and releases its
 journal lock when dropped.
 
-## Linux desktop packaging
+## Historical: Linux desktop packaging
 
-The Linux Iced client has an Arch VCS recipe in `packaging/aur`. It installs
-the desktop launcher and reads per-user configuration from the XDG config
-directory. The Arch package workflow builds the revision under test. The
-original Telegram frontend continues to target Apple Silicon macOS.
+The former Arch VCS recipe packaged the Linux Iced client. That recipe,
+its GitHub Actions workflow and its downloadable package have been retired.
 
 ## Direct MP4 theme import
 
@@ -126,7 +160,7 @@ types. Networking uses upstream `MTProtoRustEngine` through
 `NetworkEngineFactory`, already selected by the pinned application's launch
 path. Do not silently run the separate grammers session alongside it.
 
-The grammers/Iced and earlier Swift frontends remain fallback projects. Their
+The grammers/Iced and earlier Swift frontends are archived as source. Their
 session databases cannot be treated as interchangeable with the direct fork's
 Postbox/account data. Use separate Slopogram identity and application data for
 the direct app; do not touch an installed Telegram account or its files.
@@ -440,7 +474,7 @@ Desktop startup checks required execution outside the command sandbox.
 
 Earlier work below is historical.
 
-## Current work: native Swift macOS frontend
+## Historical: native Swift macOS frontend
 
 Requested on 2026-11-15. Root acts as orchestrator and reviewer; implementation
 is delegated to GPT-6.1 Terra at medium reasoning effort. Earlier work below is
@@ -540,7 +574,7 @@ Live Telegram login/send/receive/session-reuse and rendered appearance have not
 been verified. No live Telegram messages were sent. New native CI is defined but
 has not run remotely. Native process smoke checks are not visual QA.
 
-## Current extension: release binary, glass appearance, QR login
+## Historical: release binary, glass appearance, QR login
 
 Requested on 2026-11-15. The root agent coordinates implementation and review;
 coding tasks are delegated to GPT-6 Luna with medium reasoning effort.

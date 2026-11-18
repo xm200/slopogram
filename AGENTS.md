@@ -3,8 +3,8 @@
 ## Product and scope
 
 Slopogram is an experimental Rust desktop Telegram client inspired by AyuGram.
-Read `PLAN.md` for the current milestone and its acceptance criteria. Preserve
-the Windows, macOS, and Linux fallback scope. The macOS goal is the actual
+Read `PLAN.md` for the current milestone and its acceptance criteria. The only supported app, build, and release is the Apple Silicon native
+Telegram macOS fork. The goal is the actual
 Telegram macOS frontend with its upstream Rust transport and a Rust Ayu feature
 module, as explicitly selected by the user on 2026-11-16. Ghost controls and
 local deleted/edited history are now authorized feature work.
@@ -13,34 +13,22 @@ enable/view switch. Clearing retained history must not disable future capture.
 Streamer mode masks all personal information and message content; Ghost mode
 suppresses outgoing activity. Use event-driven native power/accessibility
 observers, batched storage, and no new idle polling for these modes.
-The native macOS build targets Apple Silicon. The Linux Iced client supports
-Ubuntu builds and the Arch package in `packaging/aur`. Preserve source projects
-and account data. The user requested removal of the older macOS fallback bundles.
+Preserve historical prototype source projects and account data; do not build or
+release the historical applications.
 
 ## Architecture
 
 - `crates/core`: backend-independent models and message state. No Iced or
   grammers types here.
-- `crates/telegram`: grammers integration, authentication, update processing,
-  and durable session lifecycle.
-- `crates/client`: frontend-independent runtime lifecycle and authoritative
-  message reconciliation using the core models.
-- `crates/ffi`: typed UniFFI interface consumed by native Swift. Generated
-  bindings live in ignored `native/macos/Generated` and must be regenerated
-  after bridge API changes.
+- `tools/uniffi-bindgen` generates the Swift bindings for the Ayu library.
 - `crates/ayu` and `crates/ayu-ffi`: backend-independent Rust policies and an
   always-on observed-message journal, with standalone UniFFI bindings in `native/ayu`.
   Journal keys are account-scoped and include conversation/message identity.
   Global deletions require explicit namespace eligibility from the caller;
   never infer peer type from numeric IDs across different backends.
-- `crates/desktop`: Iced application retained for Windows/Linux and macOS fallback.
-- `native/macos`: SwiftUI shell, AppKit list/composer, external configuration,
-  shared `SlopogramState`, and native frontend tests. Native targets require
-  macOS 15+.
-- `native/telegramfrontend`: separate Swift presentation target using upstream
-  TGUIKit and the shared Rust-backed state. This custom-screen prototype does
-  not satisfy the direct upstream frontend requirement. Preserve it as a fallback;
-  do not present toolkit-only reuse as migration of Telegram's original screens.
+- The old desktop, macos, telegram, client and ffi crate directories and the
+  Swift sources under `native/macos` and `native/telegramfrontend` are archived
+  implementation references outside the active build.
 - `native/telegram-macos`: ignored pinned dependency checkout, reproduced by
   `scripts/setup-telegram-frontend.sh`. Preserve upstream notices and do not run
   upstream's global setup or shipping scripts as part of local builds.
@@ -49,11 +37,8 @@ and account data. The user requested removal of the older macOS fallback bundles
   Keep its application identity and data isolated from installed Telegram and
   the grammers prototype. Save all upstream changes as reproducible patches
   outside the ignored source checkout.
-- `crates/macos`: native menus, icon, proxy discovery, and material backdrop. Keep
-  Objective-C FFI confined here and preserve Iced's original native content view.
 - Network and session I/O run asynchronously, outside GUI rendering/update code.
-- Reuse grammers protocol and synchronization machinery; do not implement MTProto
-  cryptography or reconnect logic from scratch.
+- Do not implement MTProto cryptography or reconnect logic from scratch.
 
 ## Working conventions
 

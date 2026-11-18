@@ -4,8 +4,8 @@ import SlopogramConfig
 
 final class ConfigurationTests: XCTestCase {
     func testCandidateOrderAndParsing() throws {
-        let paths = SlopogramConfiguration.candidates(cwd: URL(fileURLWithPath: "/work"), executable: URL(fileURLWithPath: "/app/bin"), repository: URL(fileURLWithPath: "/repo"))
-        XCTAssertEqual(paths.map(\.path), ["/work/.env", "/app/.env", "/repo/.env"])
+        let paths = SlopogramConfiguration.candidates(cwd: URL(fileURLWithPath: "/work"), executable: URL(fileURLWithPath: "/app/bin"), repository: URL(fileURLWithPath: "/repo"), home: URL(fileURLWithPath: "/home/test"))
+        XCTAssertEqual(paths.map(\.path), ["/work/.env", "/home/test/Library/Application Support/Slopogram Native/.env", "/app/.env", "/repo/.env"])
         XCTAssertEqual(try SlopogramConfiguration.parse("# comment\nexport API_ID=123\nNAME='hello'"), ["API_ID": "123", "NAME": "hello"])
         XCTAssertThrowsError(try SlopogramConfiguration.parse("invalid"))
         XCTAssertEqual(try SlopogramConfiguration.parse("A=abc # comment\nB=\"#value\""), ["A": "abc", "B": "#value"])

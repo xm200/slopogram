@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Slopogram
-Comment=Experimental Telegram client
-Exec=slopogram
-Icon=slopogram
-Terminal=false
-Type=Application
-Categories=Network;InstantMessaging;

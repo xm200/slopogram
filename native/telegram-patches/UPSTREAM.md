@@ -14,8 +14,7 @@ transport. The user explicitly selected this architecture on 2026-11-16.
 The Rust transport source is
 [TelegramMessenger/mtproto-engine](https://github.com/TelegramMessenger/mtproto-engine)
 at `da4b2170210aab0430c4ff18c032991f3030cf45`.
-The separate Slopogram grammers engine is retained for fallback clients and is
-not started alongside the direct application's network engine.
+The earlier grammers implementation is archived as reference source.
 
 ## Slopogram changes
 
@@ -26,9 +25,7 @@ standalone Rust `slopogram-ayu`/`slopogram-ayu-ffi` feature library and its
 `SlopogramAyu` Swift bindings. The exact implemented feature coverage and checks
 are recorded in the root `PLAN.md`.
 
-The existing custom-screen `native/telegramfrontend` target is an earlier
-TGUIKit prototype. It is a separate application and does not establish acceptance
-of the direct frontend migration.
+The `native/telegramfrontend` directory contains the retired TGUIKit prototype.
 
 ## Source and license preservation
 

@@ -12,7 +12,7 @@ crate-type = ["cdylib", "staticlib", "lib"]
 slopogram-ayu = { path = "../ayu" }
 slopogram-core.workspace = true
 tokio.workspace = true
-uniffi = "0.32.2"
+uniffi.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

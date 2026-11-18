@@ -1,0 +1,51 @@
+name: Direct macOS frontend
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct-macos:
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build tools
+        run: |
+          test "$(uname -m)" = arm64
+          brew install autoconf automake libtool cmake ninja pkg-config
+          sudo xcodebuild -runFirstLaunch
+          xcodebuild -downloadComponent MetalToolchain
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build ARM64 app bundle
+        run: scripts/bundle-direct-upstream.sh
+      - run: swift test --package-path native/ayu
+      - name: Check direct frontend policies
+        run: |
+          scripts/tests/test-direct-config.sh
+          for test in ghost-policy ayu-runtime proxy-override postbox-journal ayu-runtime-signals ayu-projection deletion-origin presence-manager system-energy; do
+            "native/telegram-patches/tests/test-$test.sh"
+          done
+          native/telegram-patches/tests/test-streamer-privacy-gui.sh
+      - run: python3 scripts/tests/test-direct-patch-series.py --compare-working-tree
+      - name: Package the native app
+        run: scripts/package-native-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Slopogram-macOS-arm64
+          path: target/release/Slopogram Native.dmg
+          if-no-files-found: error

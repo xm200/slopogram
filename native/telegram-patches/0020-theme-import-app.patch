@@ -17,13 +17,14 @@
  import ColorPalette
  import WebKit
  import CodeSyntax
-@@ -308,6 +313,286 @@
+@@ -308,6 +313,413 @@
      
      var baseAppBundleId: String {
          return  Bundle.main.bundleIdentifier!
 +    }
 +
 +    private var slopogramThemeImportInProgress = false
++    private var slopogramThemeEditor: SlopogramThemeEditorController?
 +    private enum SlopogramThemeImportError: Error {
 +        case invalidPalette, invalidWallpaper, storage
 +    }
@@ -204,7 +205,6 @@
 +    @objc func slopogramImportTheme(_ sender: Any?) {
 +        guard !slopogramThemeImportInProgress, !SlopogramStreamerMode.isActive, let context = self.currentContext else { NSSound.beep(); return }
 +        slopogramThemeImportInProgress = true
-+        let finish = { self.slopogramThemeImportInProgress = false }
 +        let panel = NSOpenPanel()
 +        panel.title = "Import Theme"
 +        panel.message = "Choose a theme, or select an MP4 to create one from its colors and first frame."
@@ -213,92 +213,219 @@
 +        panel.canChooseDirectories = false
 +        panel.beginSheetModal(for: context.window) { [weak self] response in
 +            guard let self else { return }
-+            guard response == .OK, let url = panel.url else { finish(); return }
-+            let hasAccess = url.startAccessingSecurityScopedResource()
-+            Task { @MainActor in
-+                defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
-+                do {
-+                    let prepared = try await Task.detached(priority: .userInitiated) {
-+                        try await Self.slopogramReadTheme(url)
-+                    }.value
++            guard response == .OK, let url = panel.url else {
++                self.slopogramThemeImportInProgress = false
++                return
++            }
++            self.slopogramApplyTheme(at: url, context: context, presentationWindow: context.window)
++        }
++    }
++
++    private func slopogramApplyTheme(at url: URL, context: AccountContext, presentationWindow: NSWindow, completion: @escaping () -> Void = {}) {
++        let finish = {
++            self.slopogramThemeImportInProgress = false
++            completion()
++        }
++        let hasAccess = url.startAccessingSecurityScopedResource()
++        Task { @MainActor in
++            defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
++            do {
++                let prepared = try await Task.detached(priority: .userInitiated) {
++                    try await Self.slopogramReadTheme(url)
++                }.value
++                guard !SlopogramStreamerMode.isActive, self.currentContext === context else { finish(); return }
++                let (palette, wallpaperBytes, tiled, videoBytes, videoWarning) = prepared
++                let manager = context.sharedContext.accountManager
++                let apply = {
 +                    guard !SlopogramStreamerMode.isActive, self.currentContext === context else { finish(); return }
-+                    let (palette, wallpaperBytes, tiled, videoBytes, videoWarning) = prepared
-+                    let manager = context.sharedContext.accountManager
-+                    let apply = {
-+                        guard !SlopogramStreamerMode.isActive, self.currentContext === context else { finish(); return }
-+                        Task { @MainActor in
-+                            do {
-+                                let (wallpaper, warning) = try await Task.detached(priority: .userInitiated) {
-+                                    let wallpaper = try wallpaperBytes.map { try Self.slopogramPrepareWallpaper($0, tiled: tiled, postbox: context.account.postbox) }
-+                                    var warning = videoWarning
-+                                    if let videoBytes {
-+                                        if let wallpaper, !tiled {
-+                                            do {
-+                                                try Self.slopogramStoreThemeVideo(videoBytes, wallpaper: wallpaper)
-+                                            } catch {
-+                                                warning = "The video could not be read or saved as a silent H.264 loop."
-+                                            }
-+                                        } else {
-+                                            warning = "An animated theme needs a background.jpg or background.png poster."
++                    Task { @MainActor in
++                        do {
++                            let (wallpaper, warning) = try await Task.detached(priority: .userInitiated) {
++                                let wallpaper = try wallpaperBytes.map { try Self.slopogramPrepareWallpaper($0, tiled: tiled, postbox: context.account.postbox) }
++                                var warning = videoWarning
++                                if let videoBytes {
++                                    if let wallpaper, !tiled {
++                                        do {
++                                            try Self.slopogramStoreThemeVideo(videoBytes, wallpaper: wallpaper)
++                                        } catch {
++                                            warning = "The video could not be read or saved as a silent H.264 loop."
 +                                        }
++                                    } else {
++                                        warning = "An animated theme needs a background.jpg or background.png poster."
 +                                    }
-+                                    return (wallpaper, warning)
-+                                }.value
-+                                guard !SlopogramStreamerMode.isActive, self.currentContext === context else {
-+                                    if let wallpaper { Task.detached { Self.slopogramDiscardPreparedWallpaper(wallpaper, postbox: context.account.postbox) } }
-+                                    finish(); return
 +                                }
-+                                _ = (manager.transaction { transaction -> Void in
-+                            transaction.updateSharedData(ApplicationSharedPreferencesKeys.autoNight, { entry in
-+                                let settings = entry?.get(AutoNightThemePreferences.self) ?? AutoNightThemePreferences.defaultSettings
-+                                return PreferencesEntry(settings.withUpdatedSystemBased(false).withUpdatedSchedule(nil))
-+                            })
-+                            transaction.updateSharedData(ApplicationSharedPreferencesKeys.themeSettings, { entry in
-+                                let settings = entry?.get(ThemePaletteSettings.self) ?? ThemePaletteSettings.defaultTheme
-+                                return PreferencesEntry(Self.slopogramImportedThemeSettings(settings, palette: palette, wallpaper: wallpaper))
-+                            })
-+                                } |> deliverOnMainQueue).start(completed: {
-+                                    finish()
-+                                    if let warning, !SlopogramStreamerMode.isActive, self.currentContext === context {
-+                                        let alert = NSAlert()
-+                                        alert.messageText = "Theme imported without animation"
-+                                        alert.informativeText = warning
-+                                        alert.beginSheetModal(for: context.window, completionHandler: nil)
-+                                    }
-+                                })
-+                            } catch {
-+                                finish()
-+                                guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
-+                                let alert = NSAlert()
-+                                alert.messageText = "Couldn’t import theme"
-+                                alert.informativeText = "The wallpaper could not be saved. No theme settings were changed."
-+                                alert.beginSheetModal(for: context.window, completionHandler: nil)
++                                return (wallpaper, warning)
++                            }.value
++                            guard !SlopogramStreamerMode.isActive, self.currentContext === context else {
++                                if let wallpaper { Task.detached { Self.slopogramDiscardPreparedWallpaper(wallpaper, postbox: context.account.postbox) } }
++                                finish(); return
 +                            }
++                            _ = (manager.transaction { transaction -> Void in
++                        transaction.updateSharedData(ApplicationSharedPreferencesKeys.autoNight, { entry in
++                            let settings = entry?.get(AutoNightThemePreferences.self) ?? AutoNightThemePreferences.defaultSettings
++                            return PreferencesEntry(settings.withUpdatedSystemBased(false).withUpdatedSchedule(nil))
++                        })
++                        transaction.updateSharedData(ApplicationSharedPreferencesKeys.themeSettings, { entry in
++                            let settings = entry?.get(ThemePaletteSettings.self) ?? ThemePaletteSettings.defaultTheme
++                            return PreferencesEntry(Self.slopogramImportedThemeSettings(settings, palette: palette, wallpaper: wallpaper))
++                        })
++                            } |> deliverOnMainQueue).start(completed: {
++                                finish()
++                                if let warning, !SlopogramStreamerMode.isActive, self.currentContext === context {
++                                    let alert = NSAlert()
++                                    alert.messageText = "Theme imported without animation"
++                                    alert.informativeText = warning
++                                    alert.beginSheetModal(for: presentationWindow, completionHandler: nil)
++                                }
++                            })
++                        } catch {
++                            finish()
++                            guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
++                            let alert = NSAlert()
++                            alert.messageText = "Couldn’t import theme"
++                            alert.informativeText = "The wallpaper could not be saved. No theme settings were changed."
++                            alert.beginSheetModal(for: presentationWindow, completionHandler: nil)
 +                        }
 +                    }
-+                    _ = (autoNightSettings(accountManager: manager) |> take(1) |> deliverOnMainQueue).start(next: { settings in
-+                        guard !SlopogramStreamerMode.isActive, self.currentContext === context else { finish(); return }
-+                        if settings.systemBased || settings.schedule != nil {
-+                            let alert = NSAlert()
-+                            alert.messageText = "Turn off automatic appearance?"
-+                            alert.informativeText = "Importing this theme turns off automatic and scheduled appearance changes so the theme stays selected."
-+                            alert.addButton(withTitle: "Turn Off and Import")
-+                            alert.addButton(withTitle: "Cancel")
-+                            alert.beginSheetModal(for: context.window) { response in if response == .alertFirstButtonReturn { apply() } else { finish() } }
-+                        } else { apply() }
-+                    })
-+                } catch {
-+                    finish()
-+                    guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
-+                    let alert = NSAlert()
-+                    alert.messageText = "Couldn’t import theme"
-+                    if url.pathExtension.lowercased() == "mp4" {
-+                        alert.informativeText = "Couldn’t prepare this video theme. " + error.localizedDescription
-+                    } else {
-+                        alert.informativeText = "The theme or its wallpaper could not be read or saved. Choose a valid .palette or .tdesktop-theme file."
-+                    }
-+                    alert.beginSheetModal(for: context.window, completionHandler: nil)
 +                }
++                _ = (autoNightSettings(accountManager: manager) |> take(1) |> deliverOnMainQueue).start(next: { settings in
++                    guard !SlopogramStreamerMode.isActive, self.currentContext === context else { finish(); return }
++                    if settings.systemBased || settings.schedule != nil {
++                        let alert = NSAlert()
++                        alert.messageText = "Turn off automatic appearance?"
++                        alert.informativeText = "Importing this theme turns off automatic and scheduled appearance changes so the theme stays selected."
++                        alert.addButton(withTitle: "Turn Off and Import")
++                        alert.addButton(withTitle: "Cancel")
++                        alert.beginSheetModal(for: presentationWindow) { response in if response == .alertFirstButtonReturn { apply() } else { finish() } }
++                    } else { apply() }
++                })
++            } catch {
++                finish()
++                guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
++                let alert = NSAlert()
++                alert.messageText = "Couldn’t import theme"
++                if url.pathExtension.lowercased() == "mp4" {
++                    alert.informativeText = "Couldn’t prepare this video theme. " + error.localizedDescription
++                } else {
++                    alert.informativeText = "The theme or its wallpaper could not be read or saved. Choose a valid .palette or .tdesktop-theme file."
++                }
++                alert.beginSheetModal(for: presentationWindow, completionHandler: nil)
++            }
++        }
++    }
++
++    @objc func slopogramEditTheme(_ sender: Any?) {
++        guard !SlopogramStreamerMode.isActive, let context = self.currentContext else { NSSound.beep(); return }
++        if let editor = slopogramThemeEditor {
++            editor.showWindow(nil)
++            editor.window?.makeKeyAndOrderFront(nil)
++            return
++        }
++        guard !slopogramThemeImportInProgress else { NSSound.beep(); return }
++        slopogramThemeImportInProgress = true
++        let palette = theme.colors.toString
++        var posterImage: CGImage?
++        var tiled = false
++        switch theme.backgroundMode {
++        case let .background(image, _, _, _, _):
++            posterImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
++        case let .tiled(image):
++            posterImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
++            tiled = true
++        default:
++            break
++        }
++        var videoURL: URL?
++        if case let .image(representations, _) = theme.wallpaper.wallpaper,
++           let resource = representations.first?.resource as? LocalFileMediaResource {
++            videoURL = slopogramWallpaperVideoURL(resource)
++        }
++        Task { @MainActor in
++            defer { self.slopogramThemeImportInProgress = false }
++            do {
++                let assets = try await Task.detached(priority: .userInitiated) {
++                    var poster: Data?
++                    if let posterImage {
++                        let bytes = NSMutableData()
++                        guard let destination = CGImageDestinationCreateWithData(bytes, kUTTypePNG, 1, nil) else {
++                            throw SlopogramThemeImportError.invalidWallpaper
++                        }
++                        CGImageDestinationAddImage(destination, posterImage, nil)
++                        guard CGImageDestinationFinalize(destination), bytes.length <= 16 * 1024 * 1024 else {
++                            throw SlopogramThemeImportError.invalidWallpaper
++                        }
++                        poster = bytes as Data
++                    }
++                    var video: Data?
++                    if poster != nil, let videoURL, FileManager.default.fileExists(atPath: videoURL.path) {
++                        let handle = try FileHandle(forReadingFrom: videoURL)
++                        defer { try? handle.close() }
++                        video = try handle.read(upToCount: 16 * 1024 * 1024 + 1)
++                        guard let video, video.count <= 16 * 1024 * 1024 else {
++                            throw SlopogramThemeImportError.invalidWallpaper
++                        }
++                    }
++                    return (poster, video)
++                }.value
++                guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
++                let editor = SlopogramThemeEditorController(
++                    palette: palette, wallpaper: assets.0,
++                    wallpaperExtension: assets.0 == nil ? nil : "png",
++                    wallpaperTiled: tiled, video: assets.1,
++                    onApply: { [weak self] archive, name in
++                        self?.slopogramApplyEditedTheme(archive, name: name, context: context)
++                    }
++                )
++                editor.onClose = { [weak self] in self?.slopogramThemeEditor = nil }
++                self.slopogramThemeEditor = editor
++                editor.window?.center()
++                editor.showWindow(nil)
++                editor.window?.makeKeyAndOrderFront(nil)
++            } catch {
++                guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
++                let alert = NSAlert()
++                alert.messageText = "Couldn’t open the theme editor"
++                alert.informativeText = "The current wallpaper could not be loaded. Try importing it again."
++                alert.beginSheetModal(for: context.window, completionHandler: nil)
++            }
++        }
++    }
++
++    private func slopogramApplyEditedTheme(_ archive: Data, name: String, context: AccountContext) {
++        guard !slopogramThemeImportInProgress, !SlopogramStreamerMode.isActive,
++              self.currentContext === context, let editor = slopogramThemeEditor,
++              let editorWindow = editor.window else { NSSound.beep(); return }
++        slopogramThemeImportInProgress = true
++        Task { @MainActor in
++            var temporaryDirectory: URL?
++            do {
++                let url = try await Task.detached(priority: .userInitiated) {
++                    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
++                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++                    let filename = name.components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.newlines)).joined(separator: " ").trimmingCharacters(in: .whitespaces)
++                    let url = directory.appendingPathComponent(filename.isEmpty ? "My Theme" : String(filename.prefix(100))).appendingPathExtension("tdesktop-theme")
++                    do { try archive.write(to: url, options: .atomic) }
++                    catch { try? FileManager.default.removeItem(at: directory); throw error }
++                    return url
++                }.value
++                temporaryDirectory = url.deletingLastPathComponent()
++                guard !SlopogramStreamerMode.isActive, self.currentContext === context,
++                      self.slopogramThemeEditor === editor else {
++                    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
++                    self.slopogramThemeImportInProgress = false
++                    return
++                }
++                self.slopogramApplyTheme(at: url, context: context, presentationWindow: editorWindow) {
++                    Task.detached { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
++                }
++            } catch {
++                if let temporaryDirectory { try? FileManager.default.removeItem(at: temporaryDirectory) }
++                self.slopogramThemeImportInProgress = false
++                guard !SlopogramStreamerMode.isActive, self.currentContext === context else { return }
++                let alert = NSAlert()
++                alert.messageText = "Couldn’t apply theme"
++                alert.informativeText = "The theme could not be saved. Check the available disk space and try again."
++                alert.beginSheetModal(for: editorWindow, completionHandler: nil)
 +            }
 +        }
      }

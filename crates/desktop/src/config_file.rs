@@ -21,11 +21,8 @@ pub fn load() -> Result<(), String> {
     let exe_dir = executable.parent().unwrap_or_else(|| Path::new("."));
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
-    #[cfg(target_os = "linux")]
     let user_config =
-        directories::BaseDirs::new().map(|dirs| dirs.config_dir().join("slopogram/.env"));
-    #[cfg(not(target_os = "linux"))]
-    let user_config: Option<PathBuf> = None;
+        directories::BaseDirs::new().map(|dirs| dirs.config_dir().join(user_config_suffix()));
 
     for path in candidates(&cwd, exe_dir, &repository, user_config.as_deref()) {
         if path.exists() {
@@ -38,6 +35,16 @@ pub fn load() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn user_config_suffix() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Slopogram Native/.env"
+    } else if cfg!(target_os = "windows") {
+        "Slopogram/.env"
+    } else {
+        "slopogram/.env"
+    }
 }
 
 fn candidates(
